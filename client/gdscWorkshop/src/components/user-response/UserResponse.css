@@ -1,3 +1,15 @@
 .user-response {
-  /* User response styles */
+  animation: user-response-fade-up 220ms ease-out;
+}
+
+@keyframes user-response-fade-up {
+  from {
+    opacity: 0;
+    transform: translateY(5px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }

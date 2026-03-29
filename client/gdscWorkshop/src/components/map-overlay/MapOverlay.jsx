@@ -17,11 +17,13 @@ export default function MapOverlay({ onCitySelect, mapsReady, mapsError }) {
       mapTypeId: 'satellite',
       tilt: 45,
       heading: 0,
+      disableDefaultUI: true,
       mapTypeControl: false,
       fullscreenControl: false,
       zoomControl: false,
       streetViewControl: false,
       rotateControl: false,
+      cameraControl: false,
       scaleControl: false,
       panControl: false,
       gestureHandling: 'none',
@@ -47,7 +49,8 @@ export default function MapOverlay({ onCitySelect, mapsReady, mapsError }) {
     // Enable 3D buildings
     map.setOptions({ 
       tilt: 45,
-      mapTypeId: 'satellite'
+      mapTypeId: 'satellite',
+      cameraControl: false
     });
 
     // Add click listener for city selection

@@ -9,3 +9,24 @@
   align-items: stretch;
   justify-content: stretch;
 }
+
+.chat-panel {
+  position: absolute;
+  left: 24px;
+  top: 24px;
+  bottom: 24px;
+  width: 35vw;
+  z-index: 10;
+  pointer-events: auto;
+}
+
+@media (max-width: 900px) {
+  .chat-panel {
+    width: calc(100vw - 24px);
+    right: 12px;
+    left: 12px;
+    top: 12px;
+    bottom: auto;
+    height: 42vh;
+  }
+}

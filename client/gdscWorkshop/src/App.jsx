@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import './App.css';
 import MapOverlay from './components/map-overlay/MapOverlay';
+import ChatContainer from './components/chat-container/ChatContainer';
 
 export default function App() {
   const [mapsReady, setMapsReady] = useState(false);
@@ -41,6 +42,9 @@ export default function App() {
   return (
     <div className="app">
       <MapOverlay mapsReady={mapsReady} mapsError={mapsError} />
+      <aside className="chat-panel">
+        <ChatContainer />
+      </aside>
     </div>
   );
 }

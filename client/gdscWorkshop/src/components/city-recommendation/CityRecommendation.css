@@ -1,3 +1,83 @@
 .city-recommendation {
-  /* City recommendation styles */
+  width: 100%;
+  margin-top: 14px;
+  padding-top: 10px;
+  border-top: 1px solid rgba(255, 255, 255, 0.35);
+}
+
+.city-recommendation--message {
+  margin-top: 0;
+  padding-top: 0;
+  border-top: none;
+}
+
+.city-recommendation-title {
+  margin: 0 0 10px;
+  font-size: 0.98rem;
+  color: #1f2b38;
+}
+
+.city-recommendation-list {
+  display: grid;
+  gap: 10px;
+  max-height: 336px;
+  overflow-y: auto;
+}
+
+.city-recommendation-card {
+  display: grid;
+  grid-template-columns: 168px 1fr;
+  gap: 10px;
+  width: 100%;
+  padding: 8px;
+  border-radius: 10px;
+  background: #ffffff;
+  border: 1px solid #c6d7e6;
+  text-align: left;
+  cursor: pointer;
+  box-shadow: 0 10px 22px rgba(18, 43, 61, 0.08);
+}
+
+.city-recommendation-card:hover {
+  background: #f8fbfd;
+  border-color: #7aa8cd;
+}
+
+.city-recommendation-card:focus-visible {
+  outline: 2px solid rgba(53, 120, 185, 0.5);
+  outline-offset: 2px;
+}
+
+.city-recommendation-photo-frame {
+  width: 168px;
+  height: 96px;
+  border-radius: 8px;
+  overflow: hidden;
+  background: #dfe9f1;
+}
+
+.city-recommendation-photo {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.city-recommendation-meta {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 4px;
+}
+
+.city-recommendation-rank {
+  font-size: 0.78rem;
+  font-weight: 700;
+  color: #ff7a00;
+}
+
+.city-recommendation-name {
+  margin: 0;
+  font-size: 0.95rem;
+  color: #13283f;
 }

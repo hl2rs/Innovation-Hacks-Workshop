@@ -1,6 +1,8 @@
 const express = require('express');
 const cors = require('cors');
 require('dotenv').config();
+const planningRoutes = require('../routes/planningRoutes');
+const aiRoutes = require('../routes/aiRoutes');
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -18,6 +20,9 @@ app.get('/', (req, res) => {
 app.get('/api/health', (req, res) => {
   res.json({ status: 'Server is running' });
 });
+
+app.use('/api/planning', planningRoutes);
+app.use('/api', aiRoutes);
 
 // Error handling middleware
 app.use((err, req, res, next) => {

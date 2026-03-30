@@ -1,7 +1,7 @@
 // Constructs the authenticated Places API (New) media URL for a photo resource
 // name. Called when building candidate stops, city suggestion cards, and the
 // detailed stop panel photos.
-function buildPlacePhotoUrl(photoName, mapsApiKey, maxHeightPx = 180, maxWidthPx = 280) {
+function buildPlacePhotoUrl(photoName, mapsApiKey, maxHeightPx = 420, maxWidthPx = 720) {
   const normalized = String(photoName || '').trim();
   if (!normalized || !mapsApiKey) {
     return '';

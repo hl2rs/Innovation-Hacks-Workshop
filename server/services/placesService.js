@@ -6,6 +6,7 @@ const {
   formatPriceLevel,
   buildPlaceHighlights
 } = require('../utils/placeFormatting');
+const { estimateVisitWindow } = require('../utils/planning');
 
 // Looks up the geographic center of a city. Called at the start of every
 // planning request — all place searches radiate outward from this point.
@@ -135,7 +136,7 @@ async function searchCategoryPlaces(city, categoryId, center, mapsApiKey, catego
       'Content-Type': 'application/json',
       'X-Goog-Api-Key': mapsApiKey,
       'X-Goog-FieldMask':
-        'places.id,places.name,places.displayName,places.formattedAddress,places.rating,places.userRatingCount,places.location,places.photos'
+        'places.id,places.name,places.displayName,places.formattedAddress,places.rating,places.userRatingCount,places.location,places.photos,places.primaryType,places.primaryTypeDisplayName'
     },
     body: JSON.stringify({
       textQuery: `${config.query} in ${city}`,
@@ -159,21 +160,83 @@ async function searchCategoryPlaces(city, categoryId, center, mapsApiKey, catego
 
   return places
     .filter((place) => place?.id && place?.location?.latitude && place?.location?.longitude)
-    .map((place) => ({
-      id: place.id,
-      resourceName: place.name,
-      name: place.displayName?.text || 'Unknown place',
-      address: place.formattedAddress || '',
-      rating: Number(place.rating || 0),
-      userRatingCount: Number(place.userRatingCount || 0),
-      location: {
-        lat: Number(place.location.latitude),
-        lng: Number(place.location.longitude)
-      },
-      photoName: place?.photos?.[0]?.name || '',
-      categoryId,
-      suggestedVisitMinutes: config.visitMinutes
-    }));
+    .map((place) => {
+      const candidate = {
+        id: place.id,
+        resourceName: place.name,
+        name: place.displayName?.text || 'Unknown place',
+        address: place.formattedAddress || '',
+        rating: Number(place.rating || 0),
+        userRatingCount: Number(place.userRatingCount || 0),
+        location: {
+          lat: Number(place.location.latitude),
+          lng: Number(place.location.longitude)
+        },
+        photoName: place?.photos?.[0]?.name || '',
+        categoryId,
+        primaryType: String(place?.primaryType || '').trim(),
+        primaryTypeDisplayName: toDisplayText(place?.primaryTypeDisplayName?.text || place?.primaryType || ''),
+        suggestedVisitMinutes: config.visitMinutes
+      };
+
+      return {
+        ...candidate,
+        ...estimateVisitWindow(candidate),
+      };
+    });
+}
+
+async function getPlanningPlaceSnapshot(placeId, mapsApiKey) {
+  const normalizedPlaceId = String(placeId || '').trim();
+  if (!normalizedPlaceId) {
+    throw new Error('Place id is required.');
+  }
+
+  const response = await fetch(`https://places.googleapis.com/v1/places/${normalizedPlaceId}`, {
+    method: 'GET',
+    headers: {
+      'Content-Type': 'application/json',
+      'X-Goog-Api-Key': mapsApiKey,
+      'X-Goog-FieldMask': [
+        'id',
+        'displayName',
+        'primaryType',
+        'primaryTypeDisplayName',
+        'editorialSummary',
+        'currentOpeningHours',
+        'regularOpeningHours',
+        'reviews'
+      ].join(',')
+    }
+  });
+
+  if (!response.ok) {
+    const err = await response.text();
+    throw new Error(`Planning place snapshot failed: ${err}`);
+  }
+
+  const place = await response.json();
+
+  return {
+    placeId: String(place?.id || normalizedPlaceId),
+    name: extractTextValue(place?.displayName),
+    primaryType: String(place?.primaryType || '').trim(),
+    primaryTypeDisplayName: toDisplayText(place?.primaryTypeDisplayName?.text || place?.primaryType || ''),
+    editorialSummary: extractTextValue(place?.editorialSummary),
+    openNow:
+      typeof place?.currentOpeningHours?.openNow === 'boolean'
+        ? place.currentOpeningHours.openNow
+        : undefined,
+    weekdayDescriptions: Array.isArray(place?.regularOpeningHours?.weekdayDescriptions)
+      ? place.regularOpeningHours.weekdayDescriptions.slice(0, 7)
+      : [],
+    reviews: Array.isArray(place?.reviews)
+      ? place.reviews.slice(0, 3).map((review) => ({
+          rating: Number(review?.rating || 0),
+          text: extractTextValue(review?.originalText || review?.text)
+        }))
+      : []
+  };
 }
 
 // Fetches 30+ fields from the Places API (New) for a single place, then calls
@@ -276,4 +339,10 @@ async function getPlaceDetails(placeId, mapsApiKey, aiApiKey) {
   };
 }
 
-module.exports = { findCityCenter, searchCities, searchCategoryPlaces, getPlaceDetails };
+module.exports = {
+  findCityCenter,
+  searchCities,
+  searchCategoryPlaces,
+  getPlanningPlaceSnapshot,
+  getPlaceDetails,
+};

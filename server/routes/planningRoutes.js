@@ -1,10 +1,27 @@
 const { Router } = require('express');
 const { getPopularCitiesForCountry, resolveCityInCountry } = require('../services/popularCitiesService');
-const { findCityCenter, searchCities, searchCategoryPlaces, getPlaceDetails } = require('../services/placesService');
+const { buildPlacePhotoUrl } = require('../utils/placeFormatting');
+const {
+  findCityCenter,
+  searchCities,
+  searchCategoryPlaces,
+  getPlanningPlaceSnapshot,
+  getPlaceDetails
+} = require('../services/placesService');
 const { getTravelMinutes, computeRoutePolyline } = require('../services/routesService');
-const { callGemini } = require('../services/geminiService');
+const {
+  callGemini,
+  estimatePlaceVisitWindows,
+  estimateTrafficAdjustedTravelTimes
+} = require('../services/geminiService');
 const { toMinutes, formatHour } = require('../utils/time');
-const { pickTopCandidates, parseJsonFromModelText } = require('../utils/planning');
+const {
+  clampMinutes,
+  computeCandidatePriorityScore,
+  estimateVisitWindow,
+  pickTopCandidates,
+  parseJsonFromModelText
+} = require('../utils/planning');
 
 const router = Router();
 
@@ -154,6 +171,578 @@ function resolveCategory(value) {
   return byLabel ? byLabel.id : str;
 }
 
+function getCategoryLabel(categoryId) {
+  return planningOptions.find((option) => option.id === categoryId)?.label || categoryId;
+}
+
+function buildStopPhotoUrl(photoName, mapsApiKey) {
+  return buildPlacePhotoUrl(photoName, mapsApiKey, 640, 960);
+}
+
+function buildDestinationContext(cityName, cityQuery, country) {
+  const parts = [cityName, cityQuery, country]
+    .map((value) => String(value || '').trim())
+    .filter(Boolean);
+
+  return parts
+    .filter((value, index) => {
+      const normalized = value.toLowerCase();
+      return parts.findIndex((candidate) => candidate.toLowerCase() === normalized) === index;
+    })
+    .join(', ');
+}
+
+function getCurrentWeekdayName(referenceDate = new Date()) {
+  return ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'][
+    referenceDate.getDay()
+  ];
+}
+
+function buildDepartureDateTime(currentMinute, referenceDate = new Date()) {
+  const baseDate = new Date(referenceDate);
+  if (!Number.isFinite(Number(currentMinute))) {
+    return baseDate.toISOString();
+  }
+
+  const totalMinutes = Number(currentMinute);
+  const dayOffset = Math.floor(totalMinutes / 1440);
+  const normalizedMinutes = ((totalMinutes % 1440) + 1440) % 1440;
+  const hours = Math.floor(normalizedMinutes / 60);
+  const minutes = normalizedMinutes % 60;
+
+  baseDate.setHours(0, 0, 0, 0);
+  baseDate.setDate(baseDate.getDate() + dayOffset);
+  baseDate.setHours(hours, minutes, 0, 0);
+  return baseDate.toISOString();
+}
+
+function getCurrentLocationLabel({ city, cityName, itinerary }) {
+  if (Array.isArray(itinerary) && itinerary.length) {
+    const lastStop = itinerary[itinerary.length - 1];
+    return [lastStop?.name, lastStop?.address].filter(Boolean).join(' - ');
+  }
+
+  return `${cityName || city} city center`;
+}
+
+async function applyTrafficAdjustedTravelTimes({
+  aiApiKey,
+  candidates,
+  city,
+  cityName,
+  currentMinute,
+  destinationContext,
+  itinerary,
+}) {
+  if (!Array.isArray(candidates) || !candidates.length) {
+    return [];
+  }
+
+  const departureDateTime = new Date(buildDepartureDateTime(currentMinute));
+
+  try {
+    const trafficAdjustments = await estimateTrafficAdjustedTravelTimes({
+      candidates,
+      aiApiKey,
+      destinationContext: destinationContext || city,
+      weekdayName: getCurrentWeekdayName(departureDateTime),
+      departureTimeLabel: formatHour(currentMinute),
+      originLabel: getCurrentLocationLabel({ city, cityName, itinerary }),
+    });
+    const adjustmentMap = new Map(
+      trafficAdjustments.map((row) => [row.id, row]).filter(([id]) => id)
+    );
+
+    return candidates.map((candidate) => {
+      const adjustment = adjustmentMap.get(candidate.id);
+      if (!adjustment) {
+        return candidate;
+      }
+
+      const baselineTravelMinutes = Math.max(1, Number(candidate.travelMinutes || 0));
+      const clampedAdjustedTravelMinutes = clampMinutes(
+        Number.isFinite(adjustment.adjustedTravelMinutes)
+          ? adjustment.adjustedTravelMinutes
+          : Math.round(baselineTravelMinutes * Math.max(0.95, Math.min(1.35, Number(adjustment.multiplier) || 1))),
+        Math.max(1, Math.floor(baselineTravelMinutes * 0.95)),
+        Math.max(2, Math.ceil(baselineTravelMinutes * 1.35)),
+      );
+
+      return {
+        ...candidate,
+        baseTravelMinutes: baselineTravelMinutes,
+        travelMinutes: clampedAdjustedTravelMinutes,
+        trafficRationale: adjustment.rationale || '',
+      };
+    });
+  } catch {
+    return candidates;
+  }
+}
+
+function getTodayWeekdayDescription(weekdayDescriptions, referenceDate = new Date()) {
+  if (!Array.isArray(weekdayDescriptions) || !weekdayDescriptions.length) {
+    return '';
+  }
+
+  const entries = weekdayDescriptions
+    .map((entry) => String(entry || '').trim())
+    .filter(Boolean);
+
+  if (!entries.length) {
+    return '';
+  }
+
+  const weekdayName = getCurrentWeekdayName(referenceDate);
+  const directMatch = entries.find((entry) => entry.toLowerCase().startsWith(`${weekdayName.toLowerCase()}:`));
+
+  if (directMatch) {
+    return directMatch;
+  }
+
+  const mondayFirstIndex = (referenceDate.getDay() + 6) % 7;
+  return entries[mondayFirstIndex] || '';
+}
+
+function isCandidateOpenToday(candidate, referenceDate = new Date()) {
+  const todayDescription = getTodayWeekdayDescription(candidate?.weekdayDescriptions, referenceDate);
+
+  if (!todayDescription) {
+    return true;
+  }
+
+  return !/\bclosed\b/i.test(todayDescription);
+}
+
+function buildStop(candidate, arrival, departure, mapsApiKey) {
+  return {
+    placeId: candidate.id,
+    name: candidate.name,
+    address: candidate.address,
+    categoryId: candidate.categoryId,
+    categoryLabel: getCategoryLabel(candidate.categoryId),
+    primaryType: candidate.primaryTypeDisplayName || candidate.primaryType || '',
+    rating: candidate.rating,
+    userRatingCount: candidate.userRatingCount,
+    travelMinutes: candidate.travelMinutes,
+    visitMinutes: candidate.suggestedVisitMinutes,
+    visitDurationRationale: candidate.visitDurationRationale || '',
+    location: candidate.location,
+    photoUrl: buildStopPhotoUrl(candidate.photoName, mapsApiKey),
+    startTime: formatHour(arrival),
+    endTime: formatHour(departure),
+    aiReason: candidate.aiReason || '',
+    nextStep: candidate.nextStep || ''
+  };
+}
+
+function normalizeAiVisitWindow(rawWindow, fallbackWindow) {
+  const minimumVisitMinutes = Math.max(
+    30,
+    Math.min(
+      300,
+      Number.isFinite(Number(rawWindow?.minimumVisitMinutes))
+        ? Math.round(Number(rawWindow.minimumVisitMinutes))
+        : fallbackWindow.minimumVisitMinutes
+    )
+  );
+
+  const maximumVisitMinutes = Math.max(
+    minimumVisitMinutes + 15,
+    Math.min(
+      360,
+      Number.isFinite(Number(rawWindow?.maximumVisitMinutes))
+        ? Math.round(Number(rawWindow.maximumVisitMinutes))
+        : fallbackWindow.maximumVisitMinutes
+    )
+  );
+
+  const recommendedVisitMinutes = clampMinutes(
+    Number.isFinite(Number(rawWindow?.recommendedVisitMinutes))
+      ? Number(rawWindow.recommendedVisitMinutes)
+      : fallbackWindow.recommendedVisitMinutes,
+    minimumVisitMinutes,
+    maximumVisitMinutes
+  );
+
+  return {
+    minimumVisitMinutes,
+    recommendedVisitMinutes,
+    maximumVisitMinutes,
+    visitDurationRationale:
+      String(rawWindow?.rationale || '').trim() || fallbackWindow.visitDurationRationale,
+  };
+}
+
+async function enrichPlanningCandidates(candidates, mapsApiKey, aiApiKey, destinationContext) {
+  const snapshots = await Promise.all(
+    candidates.map(async (candidate) => {
+      try {
+        return await getPlanningPlaceSnapshot(candidate.id, mapsApiKey);
+      } catch {
+        return null;
+      }
+    })
+  );
+
+  const mergedCandidates = candidates.map((candidate, index) => {
+    const snapshot = snapshots[index];
+    const merged = {
+      ...candidate,
+      primaryType: snapshot?.primaryType || candidate.primaryType,
+      primaryTypeDisplayName:
+        snapshot?.primaryTypeDisplayName || candidate.primaryTypeDisplayName || candidate.primaryType,
+      editorialSummary: snapshot?.editorialSummary || '',
+      openNow: snapshot?.openNow,
+      weekdayDescriptions: snapshot?.weekdayDescriptions || [],
+      reviewSnippets: Array.isArray(snapshot?.reviews)
+        ? snapshot.reviews
+            .map((review) => ({
+              rating: Number(review?.rating || 0),
+              text: String(review?.text || '').trim()
+            }))
+            .filter((review) => review.text)
+            .slice(0, 3)
+        : []
+    };
+
+    return {
+      ...merged,
+      categoryLabel: getCategoryLabel(candidate.categoryId),
+    };
+  });
+
+  let aiVisitWindowById = new Map();
+  try {
+    const aiWindows = await estimatePlaceVisitWindows(mergedCandidates, aiApiKey, destinationContext);
+    aiVisitWindowById = new Map(
+      aiWindows.map((window) => [String(window.id || '').trim(), window]).filter(([id]) => id)
+    );
+  } catch {
+    aiVisitWindowById = new Map();
+  }
+
+  return mergedCandidates.map((merged) => {
+    const fallbackWindow = estimateVisitWindow(merged);
+    const visitWindow = normalizeAiVisitWindow(aiVisitWindowById.get(merged.id), fallbackWindow);
+
+    return {
+      ...merged,
+      ...visitWindow,
+      suggestedVisitMinutes: visitWindow.recommendedVisitMinutes,
+      totalCost: merged.travelMinutes + visitWindow.recommendedVisitMinutes
+    };
+  });
+}
+
+async function chooseNextCandidate({
+  aiApiKey,
+  city,
+  cityName,
+  destinationContext,
+  categories,
+  currentMinute,
+  endMinute,
+  itinerary,
+  candidates,
+}) {
+  const remainingMinutes = endMinute - currentMinute;
+  if (!candidates.length) {
+    return null;
+  }
+
+  const scoredCandidates = candidates
+    .map((candidate) => {
+      const priority = computeCandidatePriorityScore(candidate, remainingMinutes, itinerary);
+      return {
+        ...candidate,
+        priorityScore: priority.score,
+        prioritySignals: priority.signals,
+      };
+    })
+    .sort((a, b) => b.priorityScore - a.priorityScore);
+
+  const fallbackPool = scoredCandidates.slice(0, Math.min(3, scoredCandidates.length));
+  const fallback = fallbackPool[Math.floor(Math.random() * fallbackPool.length)] || candidates[0];
+  const fallbackMaxVisit = Math.min(
+    fallback.maximumVisitMinutes,
+    Math.max(fallback.minimumVisitMinutes, remainingMinutes - fallback.travelMinutes)
+  );
+
+  try {
+    const promptCandidates = [...scoredCandidates].sort((left, right) => {
+      const scoreDelta = Math.abs(right.priorityScore - left.priorityScore);
+      if (scoreDelta <= 4) {
+        return Math.random() - 0.5;
+      }
+
+      return right.priorityScore - left.priorityScore;
+    });
+
+    // console.log(
+    //   'Planning candidate list:',
+    //   JSON.stringify(
+    //     promptCandidates.map((candidate) => ({
+    //       id: candidate.id,
+    //       name: candidate.name,
+    //       address: candidate.address,
+    //       category: getCategoryLabel(candidate.categoryId),
+    //       primaryType: candidate.primaryTypeDisplayName || candidate.primaryType || '',
+    //       rating: candidate.rating,
+    //       userRatingCount: candidate.userRatingCount,
+    //       priorityScore: Number(candidate.priorityScore?.toFixed?.(2) || candidate.priorityScore || 0),
+    //       travelMinutes: candidate.travelMinutes,
+    //       minimumVisitMinutes: candidate.minimumVisitMinutes,
+    //       recommendedVisitMinutes: candidate.recommendedVisitMinutes,
+    //       maximumVisitMinutes: candidate.maximumVisitMinutes,
+    //       openNow:
+    //         typeof candidate.openNow === 'boolean'
+    //           ? candidate.openNow
+    //           : 'unknown',
+    //       weekdayDescriptions: Array.isArray(candidate.weekdayDescriptions)
+    //         ? candidate.weekdayDescriptions
+    //         : [],
+    //     })),
+    //     null,
+    //     2,
+    //   ),
+    // );
+
+    const analysisPrompt = [
+      'You are choosing the next stop in a travel itinerary.',
+      `Destination city name: ${cityName || city}`,
+      `Destination search query: ${city}`,
+      `Destination context: ${destinationContext || city}`,
+      `Selected interests: ${categories.map(getCategoryLabel).join(', ')}`,
+      `Current time: ${formatHour(currentMinute)}`,
+      `End of planning window: ${formatHour(endMinute)}`,
+      `Remaining minutes: ${remainingMinutes}`,
+      itinerary.length
+        ? `Itinerary so far: ${JSON.stringify(
+            itinerary.map((stop) => ({
+              name: stop.name,
+              address: stop.address || '',
+              startTime: stop.startTime,
+              endTime: stop.endTime,
+              categoryId: stop.categoryId,
+              travelMinutes: stop.travelMinutes,
+              visitMinutes: stop.visitMinutes
+            }))
+          )}`
+        : 'Itinerary so far: []',
+      'Choose the single best next place from the candidate JSON.',
+      'Only choose places physically located in the requested destination area.',
+      'Use the full candidate address to reject places in other cities, regions, or countries even if the place name sounds related.',
+      'Prioritize high-confidence places with both excellent star ratings and substantial review volume.',
+      'When multiple candidates are similarly strong, prefer variety over repeatedly picking the exact same famous place.',
+      'A great itinerary should feel diverse in category, vibe, and stop type instead of repeating the same pattern.',
+      'A place with a high rating but very few reviews is weaker evidence than a place with a similarly high rating and hundreds or thousands of reviews.',
+      'Consider many factors together: rating, number of reviews, review snippet quality, editorial summary, open-now status, place type, travel time, visit duration fit, route efficiency, and how this stop shapes the rest of the itinerary.',
+      'Do not waste too much of the remaining window on one stop unless it is clearly the anchor experience and its quality justifies it.',
+      'Avoid weakly reviewed or low-evidence places when stronger options exist.',
+      'Return ONLY JSON in this exact shape:',
+      '{"selectedId":"<place id>","visitMinutes":75,"reason":"<why this stop now>","nextStep":"<brief transition toward what should come after>"}',
+      'Rules:',
+      '- visitMinutes must be an integer within the candidate minVisitMinutes/maxVisitMinutes range.',
+      '- The chosen stop must still fit inside the remaining minutes once travel is included.',
+      '- Use review snippets and editorial summary as evidence, not filler.',
+      '- If two places are similar, prefer the one with stronger review volume and review quality evidence.',
+      '- If two places are similarly strong, choose the more distinctive or less repetitive option.',
+      JSON.stringify(
+        promptCandidates.map((candidate) => ({
+          id: candidate.id,
+          name: candidate.name,
+          fullLocation: [candidate.name, candidate.address].filter(Boolean).join(' - '),
+          address: candidate.address,
+          category: getCategoryLabel(candidate.categoryId),
+          primaryType: candidate.primaryTypeDisplayName || candidate.primaryType || '',
+          rating: candidate.rating,
+          userRatingCount: candidate.userRatingCount,
+          priorityScore: Number(candidate.priorityScore?.toFixed?.(2) || candidate.priorityScore || 0),
+          prioritySignals: candidate.prioritySignals || {},
+          travelMinutes: candidate.travelMinutes,
+          minVisitMinutes: candidate.minimumVisitMinutes,
+          recommendedVisitMinutes: candidate.recommendedVisitMinutes,
+          maxVisitMinutes: candidate.maximumVisitMinutes,
+          durationRationale: candidate.visitDurationRationale,
+          editorialSummary: candidate.editorialSummary || '',
+          reviewSnippets: candidate.reviewSnippets || [],
+          openNow:
+            typeof candidate.openNow === 'boolean'
+              ? candidate.openNow
+              : 'unknown'
+        }))
+      )
+    ].join('\n');
+
+    const analysis = await callGemini(aiApiKey, analysisPrompt, {
+      generationConfig: {
+        temperature: 0.9,
+        topP: 0.95,
+      },
+    });
+    const parsed = parseJsonFromModelText(analysis);
+    const picked = scoredCandidates.find((candidate) => candidate.id === parsed?.selectedId);
+
+    if (!picked) {
+      return {
+        ...fallback,
+        suggestedVisitMinutes: fallbackMaxVisit,
+        aiReason: '',
+        nextStep: ''
+      };
+    }
+
+    const maxVisitMinutes = Math.min(
+      picked.maximumVisitMinutes,
+      Math.max(picked.minimumVisitMinutes, remainingMinutes - picked.travelMinutes)
+    );
+    const visitMinutes = clampMinutes(parsed?.visitMinutes, picked.minimumVisitMinutes, maxVisitMinutes);
+
+    return {
+      ...picked,
+      suggestedVisitMinutes: visitMinutes,
+      aiReason: String(parsed?.reason || '').trim(),
+      nextStep: String(parsed?.nextStep || '').trim()
+    };
+  } catch {
+    return {
+      ...fallback,
+      suggestedVisitMinutes: fallbackMaxVisit,
+      aiReason: '',
+      nextStep: ''
+    };
+  }
+}
+
+async function computeNextPlanningStop({
+  aiApiKey,
+  mapsApiKey,
+  city,
+  cityName,
+  destinationContext,
+  categories,
+  center,
+  currentLocation,
+  currentMinute,
+  endMinute,
+  itinerary,
+}) {
+  const chosenPlaceIds = new Set(itinerary.map((stop) => String(stop.placeId || '')).filter(Boolean));
+  const remainingMinutes = endMinute - currentMinute;
+
+  if (remainingMinutes <= 0) {
+    return { done: true, message: 'No more stops fit in the remaining time.' };
+  }
+
+  const groupedResults = await Promise.all(
+    categories.map((categoryId) => searchCategoryPlaces(city, categoryId, center, mapsApiKey, categoryConfig))
+  );
+
+  const uniqueById = new Map();
+  groupedResults.flat().forEach((place) => {
+    if (!chosenPlaceIds.has(place.id) && !uniqueById.has(place.id)) {
+      uniqueById.set(place.id, place);
+    }
+  });
+
+  const withTravel = [];
+  const departureTime = buildDepartureDateTime(currentMinute);
+  for (const candidate of uniqueById.values()) {
+    const travelMinutes = await getTravelMinutes(currentLocation, candidate.location, mapsApiKey, {
+      departureTime,
+    });
+    const minimumTotalCost = travelMinutes + candidate.minimumVisitMinutes;
+    if (minimumTotalCost <= remainingMinutes) {
+      withTravel.push({
+        ...candidate,
+        baseTravelMinutes: travelMinutes,
+        travelMinutes,
+        totalCost: travelMinutes + candidate.recommendedVisitMinutes,
+        suggestedVisitMinutes: candidate.recommendedVisitMinutes
+      });
+    }
+  }
+
+  if (!withTravel.length) {
+    return { done: true, message: 'No more stops fit in the remaining time.' };
+  }
+
+  const shortlistedCandidates = pickTopCandidates(withTravel, remainingMinutes, itinerary);
+  const trafficAdjustedCandidates = await applyTrafficAdjustedTravelTimes({
+    aiApiKey,
+    candidates: shortlistedCandidates,
+    city,
+    cityName,
+    currentMinute,
+    destinationContext,
+    itinerary,
+  });
+
+  const enrichedCandidates = await enrichPlanningCandidates(
+    trafficAdjustedCandidates,
+    mapsApiKey,
+    aiApiKey,
+    destinationContext || city
+  );
+
+  const feasibleCandidates = enrichedCandidates.filter(
+    (candidate) => candidate.travelMinutes + candidate.minimumVisitMinutes <= remainingMinutes
+  );
+
+  const openTodayCandidates = feasibleCandidates.filter((candidate) => isCandidateOpenToday(candidate));
+
+  if (!openTodayCandidates.length) {
+    return { done: true, message: 'No more stops fit in the remaining time.' };
+  }
+
+  const selected = await chooseNextCandidate({
+    aiApiKey,
+    city,
+    cityName,
+    destinationContext,
+    categories,
+    currentMinute,
+    endMinute,
+    itinerary,
+    candidates: openTodayCandidates
+  });
+
+  if (!selected) {
+    return { done: true, message: 'No more stops fit in the remaining time.' };
+  }
+
+  const fallbackSelected =
+    Math.ceil((currentMinute + selected.travelMinutes) / 5) * 5 + selected.minimumVisitMinutes > endMinute
+      ? openTodayCandidates.find((candidate) =>
+          Math.ceil((currentMinute + candidate.travelMinutes) / 5) * 5 + candidate.minimumVisitMinutes <= endMinute
+        ) || null
+      : null;
+
+  const finalCandidate = fallbackSelected || selected;
+  const arrival = Math.ceil((currentMinute + finalCandidate.travelMinutes) / 5) * 5;
+  const maxAvailableVisitMinutes = endMinute - arrival;
+
+  if (maxAvailableVisitMinutes < finalCandidate.minimumVisitMinutes) {
+    return { done: true, message: 'No more stops fit in the remaining time.' };
+  }
+
+  finalCandidate.suggestedVisitMinutes = clampMinutes(
+    finalCandidate.suggestedVisitMinutes,
+    finalCandidate.minimumVisitMinutes,
+    Math.min(finalCandidate.maximumVisitMinutes, maxAvailableVisitMinutes)
+  );
+
+  const departure = Math.ceil((arrival + finalCandidate.suggestedVisitMinutes) / 5) * 5;
+
+  return {
+    done: false,
+    stop: buildStop(finalCandidate, arrival, departure, mapsApiKey),
+    currentMinute: departure,
+    currentLocation: finalCandidate.location,
+  };
+}
+
 // Streaming itinerary builder (step-by-step) — called repeatedly by the client,
 // once per stop, each call carrying the itinerary built so far.
 // Returns the chosen stop, or done:true when time runs out.
@@ -163,6 +752,9 @@ router.post('/next', async (req, res) => {
   const body = req.body || {};
 
   const city = String(body.city || '').trim();
+  const cityName = String(body.cityName || '').trim();
+  const country = String(body.country || '').trim();
+  const destinationContext = buildDestinationContext(body.destinationContext, cityName, country) || city;
   const categories = (Array.isArray(body.categories) ? body.categories : [])
     .map((v) => String(v).trim())
     .filter(Boolean)
@@ -217,95 +809,36 @@ router.post('/next', async (req, res) => {
           ? itinerary[itinerary.length - 1].location
           : center;
 
-    const remainingMinutes = end - currentMinute;
-    if (remainingMinutes <= 0) {
-      let routePolyline = '';
-      if (itinerary.length > 1) {
-        try { routePolyline = await computeRoutePolyline(itinerary, mapsApiKey); } catch { routePolyline = ''; }
-      }
-      return res.json({ done: true, itinerary, routePolyline, center, currentMinute, currentLocation, message: 'Time window complete.' });
-    }
-
-    const groupedResults = await Promise.all(
-      categories.map((categoryId) => searchCategoryPlaces(city, categoryId, center, mapsApiKey, categoryConfig))
-    );
-
-    const uniqueById = new Map();
-    groupedResults.flat().forEach((place) => {
-      if (!chosenPlaceIds.has(place.id) && !uniqueById.has(place.id)) {
-        uniqueById.set(place.id, place);
-      }
+    const nextStep = await computeNextPlanningStop({
+      aiApiKey,
+      mapsApiKey,
+      city,
+      cityName,
+      destinationContext,
+      categories,
+      center,
+      currentLocation,
+      currentMinute,
+      endMinute: end,
+      itinerary,
     });
 
-    const withTravel = [];
-    for (const candidate of uniqueById.values()) {
-      const travelMinutes = await getTravelMinutes(currentLocation, candidate.location, mapsApiKey);
-      const totalCost = travelMinutes + candidate.suggestedVisitMinutes;
-      if (totalCost <= remainingMinutes) {
-        withTravel.push({ ...candidate, travelMinutes, totalCost });
-      }
-    }
-
-    if (!withTravel.length) {
-      let routePolyline = '';
-      if (itinerary.length > 1) {
-        try { routePolyline = await computeRoutePolyline(itinerary, mapsApiKey); } catch { routePolyline = ''; }
-      }
-      return res.json({ done: true, itinerary, routePolyline, center, currentMinute, currentLocation, message: 'No more stops fit in the remaining time.' });
-    }
-
-    const topCandidates = pickTopCandidates(withTravel, remainingMinutes);
-    let selected = topCandidates[0];
-
-    try {
-      const analysisPrompt = [
-        'You are helping build a one-day travel itinerary step by step.',
-        `Current city: ${city}`,
-        `Time remaining (minutes): ${remainingMinutes}`,
-        'Pick the single best next stop from the JSON list and respond ONLY as JSON:',
-        '{"selectedId":"<place id>","reason":"<short reason>"}',
-        JSON.stringify(topCandidates.map((c) => ({
-          id: c.id, name: c.name, categoryId: c.categoryId, rating: c.rating,
-          userRatingCount: c.userRatingCount, travelMinutes: c.travelMinutes,
-          visitMinutes: c.suggestedVisitMinutes, totalCost: c.totalCost
-        })))
-      ].join('\n');
-
-      const analysis = await callGemini(aiApiKey, analysisPrompt);
-      const parsed = parseJsonFromModelText(analysis);
-      const picked = topCandidates.find((c) => c.id === parsed.selectedId);
-      if (picked) selected = { ...picked, aiReason: parsed.reason || '' };
-    } catch {
-      selected = { ...selected, aiReason: '' };
-    }
-
-    const arrival = Math.ceil((currentMinute + selected.travelMinutes) / 5) * 5;
-    const departure = Math.ceil((arrival + selected.suggestedVisitMinutes) / 5) * 5;
-
-    const stop = {
-      placeId: selected.id,
-      name: selected.name,
-      address: selected.address,
-      categoryId: selected.categoryId,
-      rating: selected.rating,
-      travelMinutes: selected.travelMinutes,
-      visitMinutes: selected.suggestedVisitMinutes,
-      location: selected.location,
-      photoUrl: selected.photoName
-        ? `https://places.googleapis.com/v1/${selected.photoName}/media?maxHeightPx=220&maxWidthPx=320&key=${mapsApiKey}`
-        : '',
-      startTime: formatHour(arrival),
-      endTime: formatHour(departure),
-      aiReason: selected.aiReason || ''
-    };
-
-    const nextItinerary = [...itinerary, stop];
+    const nextItinerary = nextStep.done ? itinerary : [...itinerary, nextStep.stop];
     let routePolyline = '';
     if (nextItinerary.length > 1) {
       try { routePolyline = await computeRoutePolyline(nextItinerary, mapsApiKey); } catch { routePolyline = ''; }
     }
 
-    return res.json({ done: false, stop, itinerary: nextItinerary, routePolyline, center, currentMinute: departure, currentLocation: selected.location });
+    return res.json({
+      done: nextStep.done,
+      stop: nextStep.stop,
+      itinerary: nextItinerary,
+      routePolyline,
+      center,
+      currentMinute: nextStep.done ? currentMinute : nextStep.currentMinute,
+      currentLocation: nextStep.done ? currentLocation : nextStep.currentLocation,
+      message: nextStep.message || ''
+    });
   } catch (error) {
     console.error('Planning next error:', error.message);
     return res.status(500).json({ error: 'Failed to compute next recommendation.' });
@@ -322,6 +855,9 @@ router.post('/build', async (req, res) => {
 
   const cityRaw = body.city ?? body.location ?? body.destinationCity ?? '';
   const city = String(cityRaw).trim();
+  const cityName = String(body.cityName || '').trim();
+  const country = String(body.country || '').trim();
+  const destinationContext = buildDestinationContext(body.destinationContext, cityName, country) || city;
 
   const startHour = body.startHour ?? body.startTime ?? body.start ?? '';
   const startPeriod = normalizePeriod(body.startPeriod ?? body.fromPeriod ?? body.startMeridiem ?? '');
@@ -379,88 +915,32 @@ router.post('/build', async (req, res) => {
 
   try {
     const center = await findCityCenter(city, mapsApiKey);
-
-    const groupedResults = await Promise.all(
-      categories.map((categoryId) => searchCategoryPlaces(city, categoryId, center, mapsApiKey, categoryConfig))
-    );
-
-    const allCandidates = groupedResults.flat();
-    if (!allCandidates.length) {
-      return res.status(404).json({ error: 'No places found for selected categories.' });
-    }
-
-    const uniqueById = new Map();
-    allCandidates.forEach((place) => {
-      if (!uniqueById.has(place.id)) uniqueById.set(place.id, place);
-    });
-
-    let candidates = Array.from(uniqueById.values());
     let timelineMinute = start;
     let currentLocation = center;
     const itinerary = [];
 
-    while (candidates.length && timelineMinute < end) {
-      const remainingMinutes = end - timelineMinute;
-      const withTravel = [];
-
-      for (const candidate of candidates) {
-        const travelMinutes = await getTravelMinutes(currentLocation, candidate.location, mapsApiKey);
-        const totalCost = travelMinutes + candidate.suggestedVisitMinutes;
-        if (totalCost <= remainingMinutes) {
-          withTravel.push({ ...candidate, travelMinutes, totalCost });
-        }
-      }
-
-      if (!withTravel.length) break;
-
-      const topCandidates = pickTopCandidates(withTravel, remainingMinutes);
-      let selected = topCandidates[0];
-
-      try {
-        const analysisPrompt = [
-          'You are helping build a one-day travel itinerary step by step.',
-          `Current city: ${city}`,
-          `Time remaining (minutes): ${remainingMinutes}`,
-          'Pick the single best next stop from the JSON list and respond ONLY as JSON:',
-          '{"selectedId":"<place id>","reason":"<short reason>"}',
-          JSON.stringify(topCandidates.map((c) => ({
-            id: c.id, name: c.name, categoryId: c.categoryId, rating: c.rating,
-            userRatingCount: c.userRatingCount, travelMinutes: c.travelMinutes,
-            visitMinutes: c.suggestedVisitMinutes, totalCost: c.totalCost
-          })))
-        ].join('\n');
-
-        const analysis = await callGemini(aiApiKey, analysisPrompt);
-        const parsed = parseJsonFromModelText(analysis);
-        const picked = topCandidates.find((c) => c.id === parsed.selectedId);
-        if (picked) selected = { ...picked, aiReason: parsed.reason || '' };
-      } catch {
-        selected = { ...selected, aiReason: '' };
-      }
-
-      const arrival = timelineMinute + selected.travelMinutes;
-      const departure = arrival + selected.suggestedVisitMinutes;
-
-      itinerary.push({
-        placeId: selected.id,
-        name: selected.name,
-        address: selected.address,
-        categoryId: selected.categoryId,
-        rating: selected.rating,
-        travelMinutes: selected.travelMinutes,
-        visitMinutes: selected.suggestedVisitMinutes,
-        location: selected.location,
-        photoUrl: selected.photoName
-          ? `https://places.googleapis.com/v1/${selected.photoName}/media?maxHeightPx=220&maxWidthPx=320&key=${mapsApiKey}`
-          : '',
-        startTime: formatHour(arrival),
-        endTime: formatHour(departure),
-        aiReason: selected.aiReason || ''
+    while (timelineMinute < end) {
+      const nextStep = await computeNextPlanningStop({
+        aiApiKey,
+        mapsApiKey,
+        city,
+        cityName,
+        destinationContext,
+        categories,
+        center,
+        currentLocation,
+        currentMinute: timelineMinute,
+        endMinute: end,
+        itinerary,
       });
 
-      timelineMinute = departure;
-      currentLocation = selected.location;
-      candidates = candidates.filter((c) => c.id !== selected.id);
+      if (nextStep.done || !nextStep.stop) {
+        break;
+      }
+
+      itinerary.push(nextStep.stop);
+      timelineMinute = nextStep.currentMinute;
+      currentLocation = nextStep.currentLocation;
     }
 
     if (!itinerary.length) {
@@ -471,10 +951,11 @@ router.post('/build', async (req, res) => {
     }
 
     const summaryPrompt = [
-      `Create a practical travel plan narrative for ${city}.`,
+      `Create a practical travel plan narrative for ${destinationContext || city}.`,
       `Time window: ${startHour} ${startPeriod} to ${endHour} ${endPeriod}.`,
-      'Use this itinerary JSON and explain why the sequence is efficient based on travel and stay times.',
-      'Keep it concise but useful. Use plain text with numbered stops.',
+      `Interests: ${categories.map(getCategoryLabel).join(', ')}.`,
+      'Use this itinerary JSON and explain why the sequence is efficient based on travel time, stay length, and place quality.',
+      'Keep it concise but useful. Use plain text with numbered stops and a short closing note.',
       JSON.stringify(itinerary)
     ].join('\n');
 

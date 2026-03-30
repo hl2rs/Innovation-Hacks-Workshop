@@ -2,16 +2,50 @@
   display: inline-block;
   width: fit-content;
   max-width: 85%;
+  overflow: hidden;
+  white-space: nowrap;
   padding: 10px 14px;
   border-radius: 12px;
   background: rgba(255, 255, 255, 0.72);
   color: #1f1f1f;
   border: 1px solid rgba(255, 255, 255, 0.55);
   box-shadow: 0 8px 18px rgba(0, 0, 0, 0.12);
-  font-size: 0.95rem;
+  font-size: 1.08rem;
   line-height: 1.35;
-  word-break: break-word;
+  transition: width 260ms ease;
   animation: chat-message-fade-up 220ms ease-out;
+}
+
+.chat-message--wrap {
+  width: auto;
+  max-width: 100%;
+  overflow: visible;
+  white-space: pre-line;
+}
+
+.chat-message-rich {
+  display: block;
+  align-self: flex-start;
+  flex: 0 0 auto;
+  width: min(408px, 96%);
+  max-width: min(408px, 96%);
+  padding: 12px;
+}
+
+.chat-message-rich.chat-message-rich--itinerary {
+  align-self: stretch;
+  flex: 1 1 auto;
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+  box-sizing: border-box;
+}
+
+.chat-message-measure {
+  position: absolute;
+  visibility: hidden;
+  white-space: nowrap;
+  pointer-events: none;
 }
 
 @keyframes chat-message-fade-up {

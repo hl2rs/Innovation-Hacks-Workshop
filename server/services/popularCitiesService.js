@@ -8,8 +8,11 @@ async function getPopularCitiesForCountry(country, aiApiKey) {
   const prompt = [
     'Return ONLY JSON in this shape: {"cities":[{"name":"City 1","rank":1}]}.',
     `Country: ${country}`,
-    'Provide exactly 8 popular, widely visited cities in this country ranked by tourism popularity.',
-    'Rules: rank is an integer from 1 to 8 where 1 is most popular. Use short city names only.',
+    'Provide exactly 8 cities in this country ranked by real-world tourism popularity.',
+    'Prefer the cities international and domestic travelers most commonly visit.',
+    'Rules: rank is an integer from 1 to 8 where 1 is most popular.',
+    'Use canonical short city names only.',
+    'Do not return regions, districts, neighborhoods, provinces, or duplicate city names.',
     'Do not include explanations, markdown, or extra keys.'
   ].join('\n');
 

@@ -1,3 +1,533 @@
 .travel-stop-recommendation {
-  /* Travel stop recommendation styles */
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  width: 100%;
+  min-width: 0;
+}
+
+.travel-stop-recommendation-state,
+.travel-stop-recommendation-header {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.travel-stop-recommendation-eyebrow {
+  margin: 0;
+  font-size: 0.78rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #2e638f;
+}
+
+.travel-stop-recommendation-title {
+  margin: 0;
+  font-size: 1.24rem;
+  line-height: 1.1;
+  color: #16324a;
+}
+
+.travel-stop-recommendation-summary,
+.travel-stop-recommendation-narrative {
+  margin: 0;
+  font-size: 0.92rem;
+  line-height: 1.45;
+  color: #2c475e;
+}
+
+.travel-stop-recommendation-finding {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  width: fit-content;
+  min-height: 34px;
+  padding: 0 14px;
+  border-radius: 999px;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.72), rgba(221, 234, 244, 0.44));
+  border: 1px solid rgba(160, 196, 223, 0.6);
+  box-shadow:
+    0 10px 22px rgba(26, 66, 98, 0.08),
+    inset 0 1px 0 rgba(255, 255, 255, 0.78);
+}
+
+.travel-stop-recommendation-finding-label {
+  font-size: 0.84rem;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+  color: #214361;
+}
+
+.travel-stop-recommendation-finding-dots {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.travel-stop-recommendation-finding-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+  background: linear-gradient(180deg, #6aa9d4, #2d6d98);
+  box-shadow: 0 2px 6px rgba(45, 109, 152, 0.24);
+  animation: travel-stop-finding-dot 1.2s ease-in-out infinite;
+}
+
+.travel-stop-recommendation-finding-dot:nth-child(2) {
+  animation-delay: 0.18s;
+}
+
+.travel-stop-recommendation-finding-dot:nth-child(3) {
+  animation-delay: 0.36s;
+}
+
+.travel-stop-recommendation-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.travel-stop-recommendation-chip {
+  display: inline-flex;
+  align-items: center;
+  min-height: 28px;
+  padding: 0 10px;
+  border-radius: 999px;
+  background: rgba(26, 11, 11, 0.82);
+  border: 1px solid rgba(111, 164, 207, 0.38);
+  font-size: 0.8rem;
+  color: #214361;
+}
+
+.travel-stop-recommendation-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  width: 100%;
+}
+
+.travel-stop-card {
+  display: grid;
+  grid-template-columns: 124px minmax(0, 1fr);
+  gap: 12px;
+  width: 100%;
+  box-sizing: border-box;
+  align-items: stretch;
+  padding: 10px;
+  border-radius: 14px;
+  background: #ffffff;
+  border: 1px solid #c5d8e8;
+  box-shadow: 0 12px 24px rgba(26, 66, 98, 0.12);
+}
+
+.travel-stop-card--map {
+  position: relative;
+  isolation: isolate;
+  width: 210px;
+  min-height: 214px;
+  height: 214px;
+  grid-template-columns: 1fr;
+  grid-template-rows: 100px minmax(0, 1fr);
+  gap: 6px;
+  padding: 8px;
+  border-radius: 12px;
+  background:
+    linear-gradient(180deg, #ffffff, #edf4f9);
+  border: 1px solid #d7e3ec;
+  border-top: 1px solid #ffffff;
+  box-shadow:
+    0 22px 40px rgba(12, 26, 39, 0.24),
+    0 38px 80px rgba(12, 26, 39, 0.18),
+    inset 0 1px 0 rgba(255, 255, 255, 0.68),
+    inset 0 -18px 30px rgba(164, 183, 200, 0.12);
+  overflow: hidden;
+}
+
+.travel-stop-card--map::before,
+.travel-stop-card--map::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+}
+
+.travel-stop-card--map::before {
+  z-index: 0;
+  background:
+    radial-gradient(circle at 18% 12%, rgba(255, 255, 255, 0.9), rgba(255, 255, 255, 0) 34%),
+    radial-gradient(circle at 82% 18%, rgba(186, 218, 244, 0.34), rgba(186, 218, 244, 0) 28%),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.34), rgba(255, 255, 255, 0.06) 34%, rgba(124, 150, 176, 0.1));
+}
+
+.travel-stop-card--map::after {
+  z-index: 0;
+  inset: 1px;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.52),
+    inset 0 -1px 0 rgba(255, 255, 255, 0.12);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.2), rgba(255, 255, 255, 0) 42%),
+    radial-gradient(circle at 50% -12%, rgba(255, 255, 255, 0.56), rgba(255, 255, 255, 0) 44%);
+}
+
+.travel-stop-card--map > * {
+  position: relative;
+  z-index: 1;
+}
+
+.travel-stop-card--map .travel-stop-card-photo-wrap {
+  min-height: 100px;
+  height: 100px;
+  position: relative;
+  border: 1px solid rgba(255, 255, 255, 0.34);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.42),
+    0 10px 22px rgba(18, 38, 54, 0.18);
+}
+
+.travel-stop-card--map .travel-stop-card-topline {
+  align-items: center;
+  justify-content: flex-start;
+}
+
+.travel-stop-card--map .travel-stop-card-index {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 22px;
+  padding: 0 8px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.26);
+  color: #35597a;
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  border: 1px solid rgba(255, 255, 255, 0.28);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.32);
+}
+
+.travel-stop-card--map .travel-stop-card-time {
+  font-size: 0.74rem;
+}
+
+.travel-stop-card--map .travel-stop-card-body {
+  gap: 4px;
+  justify-content: flex-start;
+  overflow: hidden;
+}
+
+.travel-stop-card--map .travel-stop-card-title {
+  font-size: 0.9rem;
+  min-height: 2.2em;
+  display: -webkit-box;
+  line-clamp: 2;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  color: #15344d;
+  text-shadow: 0 1px 0 rgba(255, 255, 255, 0.32);
+}
+
+.travel-stop-card--map .travel-stop-card-rating {
+  font-size: 0.76rem;
+  min-height: 1.2em;
+  color: rgba(49, 78, 105, 0.9);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.travel-stop-card--map .travel-stop-card-stats {
+  margin-top: 0;
+}
+
+.travel-stop-card--map .travel-stop-card-rating-row {
+  min-height: 18px;
+  min-width: 0;
+}
+
+.travel-stop-card--map .travel-stop-card-rating-emoji {
+  filter: drop-shadow(0 1px 1px rgba(0, 0, 0, 0.28));
+}
+
+.travel-stop-card--map .travel-stop-card-stat {
+  background: rgba(255, 255, 255, 0.26);
+  color: #224768;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.28);
+  min-height: 24px;
+  padding: 0 8px;
+  font-size: 0.74rem;
+}
+
+.travel-stop-card-photo-wrap--placeholder {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.travel-stop-card-photo-placeholder {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 28px;
+  padding: 0 12px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.7);
+  color: #43627a;
+  font-size: 0.76rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.travel-stop-map-overlay {
+  position: absolute;
+  transform: translate(-50%, -100%);
+  pointer-events: none;
+}
+
+.travel-stop-map-overlay-content {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  filter: drop-shadow(0 20px 34px rgba(9, 23, 34, 0.24));
+  transform-origin: center bottom;
+  animation: travel-stop-card-pop-in 380ms cubic-bezier(0.18, 0.86, 0.24, 1) both;
+}
+
+.travel-stop-map-pin {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 999px;
+  background: radial-gradient(circle at 30% 30%, #ffb067, #ff7a00 58%, #de5f00 100%);
+  border: 2px solid rgba(255, 255, 255, 0.88);
+  box-shadow:
+    0 14px 24px rgba(49, 21, 0, 0.24),
+    0 0 0 5px rgba(255, 122, 0, 0.14),
+    inset 0 1px 0 rgba(255, 255, 255, 0.36);
+  animation: travel-stop-pin-drop 440ms cubic-bezier(0.2, 0.88, 0.28, 1.15) both;
+}
+
+.travel-stop-map-pin-number {
+  font-size: 0.88rem;
+  font-weight: 800;
+  color: #ffffff;
+  text-shadow: 0 1px 2px rgba(112, 42, 0, 0.28);
+}
+
+@keyframes travel-stop-pin-drop {
+  0% {
+    opacity: 0;
+    transform: translateY(-14px) scale(0.7);
+  }
+
+  72% {
+    opacity: 1;
+    transform: translateY(4px) scale(1.08);
+  }
+
+  100% {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes travel-stop-card-pop-in {
+  0% {
+    opacity: 0;
+    transform: translateY(18px) scale(0.9);
+  }
+
+  100% {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes travel-stop-finding-dot {
+  0%,
+  80%,
+  100% {
+    opacity: 0.28;
+    transform: translateY(0) scale(0.82);
+  }
+
+  40% {
+    opacity: 1;
+    transform: translateY(-2px) scale(1);
+  }
+}
+
+.travel-stop-card-photo-wrap {
+  min-height: 132px;
+  border-radius: 12px;
+  overflow: hidden;
+  background: linear-gradient(180deg, rgba(198, 224, 242, 0.94), rgba(227, 238, 247, 0.9));
+}
+
+.travel-stop-card-photo {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.travel-stop-card-body {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  justify-content: flex-start;
+  min-width: 0;
+}
+
+.travel-stop-card-topline {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  font-size: 0.76rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: #37617e;
+}
+
+.travel-stop-card-title,
+.travel-stop-card-meta,
+.travel-stop-card-rating,
+.travel-stop-card-address,
+.travel-stop-card-reason,
+.travel-stop-card-duration-note,
+.travel-stop-card-next-step {
+  margin: 0;
+}
+
+.travel-stop-card-title {
+  font-size: 1rem;
+  line-height: 1.2;
+  color: #18354b;
+  display: -webkit-box;
+  line-clamp: 2;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.travel-stop-card-meta,
+.travel-stop-card-rating,
+.travel-stop-card-address,
+.travel-stop-card-duration-note,
+.travel-stop-card-next-step {
+  font-size: 0.84rem;
+  line-height: 1.4;
+  color: #49647a;
+}
+
+.travel-stop-card-address {
+  color: #5a7388;
+  display: -webkit-box;
+  line-clamp: 2;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.travel-stop-card-rating-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 20px;
+  min-width: 0;
+}
+
+.travel-stop-card-rating-emoji {
+  flex: 0 0 auto;
+  font-size: 0.92rem;
+  line-height: 1;
+}
+
+.travel-stop-card-rating {
+  min-width: 0;
+}
+
+.travel-stop-card-stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.travel-stop-card-actions {
+  display: flex;
+  padding-top: 4px;
+}
+
+.travel-stop-card-action-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 38px;
+  padding: 0 16px;
+  border: 1px solid #a9c2d7;
+  border-radius: 999px;
+  background: linear-gradient(180deg, #ffffff, #e7f1f8);
+  color: #16344d;
+  font-size: 0.86rem;
+  font-weight: 800;
+  letter-spacing: 0.01em;
+  cursor: pointer;
+  transition: background-color 160ms ease, transform 160ms ease, box-shadow 160ms ease;
+}
+
+.travel-stop-card-action-button:hover:not(:disabled) {
+  transform: translateY(-1px);
+  background: linear-gradient(180deg, #ffffff, #dfeef8);
+  box-shadow: 0 8px 18px rgba(22, 52, 77, 0.12);
+}
+
+.travel-stop-card-action-button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.travel-stop-card-stat {
+  display: inline-flex;
+  align-items: center;
+  min-height: 28px;
+  padding: 0 10px;
+  border-radius: 999px;
+  background: rgba(228, 242, 253, 0.95);
+  color: #000000;
+  font-size: 0.8rem;
+  font-weight: 600;
+}
+
+.travel-stop-card-reason {
+  padding-top: 2px;
+  font-size: 0.88rem;
+  line-height: 1.45;
+  color: #1d425f;
+}
+
+.travel-stop-card-next-step {
+  font-weight: 600;
+  color: #25557d;
+}
+
+@media (max-width: 640px) {
+  .travel-stop-card {
+    grid-template-columns: 1fr;
+  }
+
+  .travel-stop-card-photo-wrap {
+    min-height: 150px;
+  }
 }

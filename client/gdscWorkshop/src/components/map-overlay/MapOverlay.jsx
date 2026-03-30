@@ -33,6 +33,7 @@ export default function MapOverlay({
   const cameraFlightFrameRef = useRef(null);
   const manualCameraFlightRef = useRef(false);
   const lastFocusedCityRequestRef = useRef('');
+  const cityFocusRequestTokenRef = useRef(0);
   const routeGlowPolylineRef = useRef(null);
   const routePolylineRef = useRef(null);
   const routeAnimationFrameRef = useRef(null);
@@ -484,6 +485,84 @@ export default function MapOverlay({
     return Math.max(latSpan, lngSpan);
   };
 
+  const getCityFocusTargetZoom = (cityBounds, fallbackZoom) => {
+    const citySpan = getBoundsMaxSpan(cityBounds);
+
+    if (!Number.isFinite(citySpan)) {
+      return Math.max(10.4, Math.min(14.8, fallbackZoom || 12.4));
+    }
+
+    if (citySpan <= 0.03) return 15.4;
+    if (citySpan <= 0.08) return 14.6;
+    if (citySpan <= 0.16) return 13.9;
+    if (citySpan <= 0.35) return 13.1;
+    if (citySpan <= 0.7) return 12.3;
+    if (citySpan <= 1.3) return 11.6;
+    if (citySpan <= 2.2) return 10.9;
+    if (citySpan <= 3.8) return 10.2;
+    return 9.6;
+  };
+
+  const getCityFocusGeometry = (city) => {
+    if (!city || !geocoderRef.current || !window.google?.maps) {
+      return Promise.resolve(null);
+    }
+
+    const queries = [city.formattedAddress, city.name]
+      .map((value) => String(value || '').trim())
+      .filter(Boolean)
+      .filter((value, index, values) => values.indexOf(value) === index);
+
+    if (!queries.length) {
+      return Promise.resolve(null);
+    }
+
+    return new Promise((resolve) => {
+      const runLookup = (queryIndex) => {
+        if (queryIndex >= queries.length) {
+          resolve(null);
+          return;
+        }
+
+        const request = {
+          address: queries[queryIndex],
+        };
+
+        if (selectedCountryCode) {
+          request.componentRestrictions = {
+            country: String(selectedCountryCode).toLowerCase(),
+          };
+        }
+
+        geocoderRef.current.geocode(request, (results, status) => {
+          if (status !== "OK" || !Array.isArray(results) || !results.length) {
+            runLookup(queryIndex + 1);
+            return;
+          }
+
+          const geometry = results[0]?.geometry;
+          const sourceBounds = geometry?.bounds || geometry?.viewport || null;
+          const location = geometry?.location;
+
+          resolve({
+            center: {
+              lat: Number(location?.lat?.() ?? city.lat),
+              lng: Number(location?.lng?.() ?? city.lng),
+            },
+            bounds: sourceBounds
+              ? new window.google.maps.LatLngBounds(
+                  sourceBounds.getSouthWest(),
+                  sourceBounds.getNorthEast(),
+                )
+              : null,
+          });
+        });
+      };
+
+      runLookup(0);
+    });
+  };
+
   const getCountryTargetZoom = (countryBounds, cityBounds, fitZoom) => {
     const countrySpan = getBoundsMaxSpan(countryBounds);
     const citySpan = getBoundsMaxSpan(cityBounds);
@@ -829,7 +908,7 @@ export default function MapOverlay({
     );
   };
 
-  const focusCity = (map, city) => {
+  const focusCity = async (map, city) => {
     const lat = Number(city?.lat);
     const lng = Number(city?.lng);
     if (!Number.isFinite(lat) || !Number.isFinite(lng)) return;
@@ -837,8 +916,19 @@ export default function MapOverlay({
     clearCameraSequence();
     map.setMapTypeId("hybrid");
 
-    const targetPosition = { lat, lng };
-    const targetZoom = 17;
+    const requestToken = cityFocusRequestTokenRef.current + 1;
+    cityFocusRequestTokenRef.current = requestToken;
+    const resolvedGeometry = await getCityFocusGeometry(city);
+
+    if (requestToken !== cityFocusRequestTokenRef.current) {
+      return;
+    }
+
+    const targetPosition = resolvedGeometry?.center || { lat, lng };
+    const targetZoom = getCityFocusTargetZoom(
+      resolvedGeometry?.bounds || null,
+      Number(map.getZoom() || 12),
+    );
     const startingZoom = Number(map.getZoom() || 6);
 
     map.panTo(targetPosition);

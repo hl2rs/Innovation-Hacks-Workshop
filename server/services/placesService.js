@@ -124,11 +124,13 @@ async function searchCities(query, mapsApiKey) {
   return cities.slice(0, 6);
 }
 
-// Searches the Places API for up to 6 places matching a category's query
-// text within 12 km of the city center. Each result becomes a candidate stop
-// that will be scored and filtered by travel time during planning.
-async function searchCategoryPlaces(city, categoryId, center, mapsApiKey, categoryConfig) {
+// Searches the Places API for places matching a category's query near the
+// provided search center. Planning can call this multiple times with different
+// search centers so the candidate pool covers more of the city.
+async function searchCategoryPlaces(city, categoryId, center, mapsApiKey, categoryConfig, options = {}) {
   const config = categoryConfig[categoryId] || { query: 'top places to visit', visitMinutes: 75 };
+  const maxResultCount = Math.max(1, Math.min(10, Number(options?.maxResultCount) || 6));
+  const radiusMeters = Math.max(3000, Math.min(30000, Number(options?.radiusMeters) || 12000));
 
   const response = await fetch('https://places.googleapis.com/v1/places:searchText', {
     method: 'POST',
@@ -140,11 +142,11 @@ async function searchCategoryPlaces(city, categoryId, center, mapsApiKey, catego
     },
     body: JSON.stringify({
       textQuery: `${config.query} in ${city}`,
-      maxResultCount: 6,
+      maxResultCount,
       locationBias: {
         circle: {
           center: { latitude: center.lat, longitude: center.lng },
-          radius: 12000
+          radius: radiusMeters
         }
       }
     })

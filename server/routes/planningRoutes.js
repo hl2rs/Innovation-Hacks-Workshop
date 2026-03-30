@@ -11,8 +11,6 @@ const {
 const { getTravelMinutes, computeRoutePolyline } = require('../services/routesService');
 const {
   callGemini,
-  estimatePlaceVisitWindows,
-  estimateTrafficAdjustedTravelTimes
 } = require('../services/geminiService');
 const { toMinutes, formatHour } = require('../utils/time');
 const {
@@ -20,6 +18,7 @@ const {
   computeCandidatePriorityScore,
   estimateVisitWindow,
   pickTopCandidates,
+  pickCandidatesForTravelEstimates,
   parseJsonFromModelText
 } = require('../utils/planning');
 
@@ -201,6 +200,7 @@ function getCurrentWeekdayName(referenceDate = new Date()) {
 function buildDepartureDateTime(currentMinute, referenceDate = new Date()) {
   const baseDate = new Date(referenceDate);
   if (!Number.isFinite(Number(currentMinute))) {
+    baseDate.setMinutes(baseDate.getMinutes() + 5, 0, 0);
     return baseDate.toISOString();
   }
 
@@ -213,7 +213,76 @@ function buildDepartureDateTime(currentMinute, referenceDate = new Date()) {
   baseDate.setHours(0, 0, 0, 0);
   baseDate.setDate(baseDate.getDate() + dayOffset);
   baseDate.setHours(hours, minutes, 0, 0);
+
+  const minimumFutureTime = new Date(referenceDate);
+  minimumFutureTime.setSeconds(0, 0);
+  minimumFutureTime.setMinutes(minimumFutureTime.getMinutes() + 1);
+
+  while (baseDate <= minimumFutureTime) {
+    baseDate.setDate(baseDate.getDate() + 7);
+  }
+
   return baseDate.toISOString();
+}
+
+function getRandomCityStartLocation(center) {
+  return getRandomPointAroundCenter(center, {
+    minRadiusKm: 1.8,
+    maxRadiusKm: 8.5,
+  });
+}
+
+function getRandomPointAroundCenter(center, options = {}) {
+  if (!center || !Number.isFinite(Number(center.lat)) || !Number.isFinite(Number(center.lng))) {
+    return center;
+  }
+
+  const centerLat = Number(center.lat);
+  const centerLng = Number(center.lng);
+  const maxRadiusKm = Math.max(0.25, Number(options?.maxRadiusKm) || 8.5);
+  const minRadiusKm = Math.max(0, Math.min(maxRadiusKm, Number(options?.minRadiusKm) || 0));
+  const randomRadiusKm = minRadiusKm + Math.sqrt(Math.random()) * (maxRadiusKm - minRadiusKm);
+  const randomHeading = Math.random() * Math.PI * 2;
+  const latOffset = (randomRadiusKm / 111) * Math.cos(randomHeading);
+  const lngScale = Math.max(0.2, Math.cos((centerLat * Math.PI) / 180));
+  const lngOffset = (randomRadiusKm / (111 * lngScale)) * Math.sin(randomHeading);
+
+  return {
+    lat: centerLat + latOffset,
+    lng: centerLng + lngOffset,
+  };
+}
+
+function buildPlanningSearchCenters({ center, itinerary }) {
+  if (!center || !Number.isFinite(Number(center.lat)) || !Number.isFinite(Number(center.lng))) {
+    return [];
+  }
+
+  const isFirstLeg = !Array.isArray(itinerary) || itinerary.length === 0;
+  const randomCenterCount = isFirstLeg ? 2 : 1;
+  const searchCenters = [
+    center,
+    ...Array.from({ length: randomCenterCount }, () =>
+      getRandomPointAroundCenter(center, {
+        minRadiusKm: isFirstLeg ? 2.5 : 1.2,
+        maxRadiusKm: isFirstLeg ? 15.5 : 9.5,
+      })
+    ),
+  ];
+
+  const uniqueByGridKey = new Map();
+  searchCenters.forEach((point) => {
+    if (!point) {
+      return;
+    }
+
+    const key = `${Number(point.lat).toFixed(3)}:${Number(point.lng).toFixed(3)}`;
+    if (!uniqueByGridKey.has(key)) {
+      uniqueByGridKey.set(key, point);
+    }
+  });
+
+  return Array.from(uniqueByGridKey.values());
 }
 
 function getCurrentLocationLabel({ city, cityName, itinerary }) {
@@ -223,61 +292,6 @@ function getCurrentLocationLabel({ city, cityName, itinerary }) {
   }
 
   return `${cityName || city} city center`;
-}
-
-async function applyTrafficAdjustedTravelTimes({
-  aiApiKey,
-  candidates,
-  city,
-  cityName,
-  currentMinute,
-  destinationContext,
-  itinerary,
-}) {
-  if (!Array.isArray(candidates) || !candidates.length) {
-    return [];
-  }
-
-  const departureDateTime = new Date(buildDepartureDateTime(currentMinute));
-
-  try {
-    const trafficAdjustments = await estimateTrafficAdjustedTravelTimes({
-      candidates,
-      aiApiKey,
-      destinationContext: destinationContext || city,
-      weekdayName: getCurrentWeekdayName(departureDateTime),
-      departureTimeLabel: formatHour(currentMinute),
-      originLabel: getCurrentLocationLabel({ city, cityName, itinerary }),
-    });
-    const adjustmentMap = new Map(
-      trafficAdjustments.map((row) => [row.id, row]).filter(([id]) => id)
-    );
-
-    return candidates.map((candidate) => {
-      const adjustment = adjustmentMap.get(candidate.id);
-      if (!adjustment) {
-        return candidate;
-      }
-
-      const baselineTravelMinutes = Math.max(1, Number(candidate.travelMinutes || 0));
-      const clampedAdjustedTravelMinutes = clampMinutes(
-        Number.isFinite(adjustment.adjustedTravelMinutes)
-          ? adjustment.adjustedTravelMinutes
-          : Math.round(baselineTravelMinutes * Math.max(0.95, Math.min(1.35, Number(adjustment.multiplier) || 1))),
-        Math.max(1, Math.floor(baselineTravelMinutes * 0.95)),
-        Math.max(2, Math.ceil(baselineTravelMinutes * 1.35)),
-      );
-
-      return {
-        ...candidate,
-        baseTravelMinutes: baselineTravelMinutes,
-        travelMinutes: clampedAdjustedTravelMinutes,
-        trafficRationale: adjustment.rationale || '',
-      };
-    });
-  } catch {
-    return candidates;
-  }
 }
 
 function getTodayWeekdayDescription(weekdayDescriptions, referenceDate = new Date()) {
@@ -312,6 +326,32 @@ function isCandidateOpenToday(candidate, referenceDate = new Date()) {
   }
 
   return !/\bclosed\b/i.test(todayDescription);
+}
+
+function resolvePlanningStartLocation({ currentLocationInput, itinerary, center }) {
+  if (
+    Number.isFinite(Number(currentLocationInput?.lat)) &&
+    Number.isFinite(Number(currentLocationInput?.lng))
+  ) {
+    return {
+      lat: Number(currentLocationInput.lat),
+      lng: Number(currentLocationInput.lng),
+    };
+  }
+
+  if (Array.isArray(itinerary) && itinerary.length) {
+    return itinerary[itinerary.length - 1].location;
+  }
+
+  return getRandomCityStartLocation(center);
+}
+
+function resolvePlanningSearchCenter({ center, itinerary }) {
+  if (Array.isArray(itinerary) && itinerary.length) {
+    return center;
+  }
+
+  return getRandomCityStartLocation(center);
 }
 
 function buildStop(candidate, arrival, departure, mapsApiKey) {
@@ -374,7 +414,119 @@ function normalizeAiVisitWindow(rawWindow, fallbackWindow) {
   };
 }
 
-async function enrichPlanningCandidates(candidates, mapsApiKey, aiApiKey, destinationContext) {
+function normalizeSelectionKey(value) {
+  return String(value || '')
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function getSelectionTypeKey(candidate) {
+  return normalizeSelectionKey(
+    candidate?.primaryTypeDisplayName || candidate?.primaryType || candidate?.categoryId || ''
+  );
+}
+
+function getSelectionAreaKey(candidate) {
+  const address = String(candidate?.address || '').trim();
+  if (!address) {
+    return '';
+  }
+
+  const parts = address
+    .split(',')
+    .map((part) => normalizeSelectionKey(part))
+    .filter(Boolean);
+
+  return parts.slice(0, 2).join(' | ');
+}
+
+function pickWeightedCandidate(candidates, getWeight) {
+  if (!Array.isArray(candidates) || !candidates.length) {
+    return null;
+  }
+
+  const weightedCandidates = candidates
+    .map((candidate, index) => ({
+      candidate,
+      index,
+      weight: Math.max(0, Number(getWeight(candidate, index)) || 0),
+    }))
+    .filter((entry) => entry.weight > 0);
+
+  if (!weightedCandidates.length) {
+    return candidates[Math.floor(Math.random() * candidates.length)] || null;
+  }
+
+  const totalWeight = weightedCandidates.reduce((sum, entry) => sum + entry.weight, 0);
+  let threshold = Math.random() * totalWeight;
+
+  for (const entry of weightedCandidates) {
+    threshold -= entry.weight;
+    if (threshold <= 0) {
+      return entry.candidate;
+    }
+  }
+
+  return weightedCandidates[weightedCandidates.length - 1]?.candidate || null;
+}
+
+function buildFirstLegPromptCandidates(scoredCandidates, limit = 5) {
+  if (!Array.isArray(scoredCandidates) || !scoredCandidates.length) {
+    return [];
+  }
+
+  const topPool = scoredCandidates.slice(0, Math.min(9, scoredCandidates.length));
+  const bestScore = Number(topPool[0]?.priorityScore || 0);
+  const selected = [];
+  const categoryCounts = new Map();
+  const typeCounts = new Map();
+  const areaCounts = new Map();
+  const workingPool = [...topPool];
+  const targetCount = Math.min(limit, workingPool.length);
+
+  while (workingPool.length && selected.length < targetCount) {
+    const pickedCandidate = pickWeightedCandidate(workingPool, (candidate) => {
+      const scoreGap = Math.max(0, bestScore - Number(candidate.priorityScore || 0));
+      const categoryKey = normalizeSelectionKey(candidate.categoryId);
+      const typeKey = getSelectionTypeKey(candidate);
+      const areaKey = getSelectionAreaKey(candidate);
+      const categoryPenalty = (categoryCounts.get(categoryKey) || 0) * 1.8;
+      const typePenalty = (typeCounts.get(typeKey) || 0) * 1.6;
+      const areaPenalty = (areaCounts.get(areaKey) || 0) * 2.2;
+      const baseWeight = Math.max(0.75, 10 - scoreGap * 0.6);
+      const randomnessBoost = 0.8 + Math.random() * 0.7;
+
+      return Math.max(0.1, (baseWeight - categoryPenalty - typePenalty - areaPenalty) * randomnessBoost);
+    });
+
+    if (!pickedCandidate) {
+      break;
+    }
+
+    const pickedIndex = workingPool.findIndex((candidate) => candidate.id === pickedCandidate.id);
+    if (pickedIndex >= 0) {
+      workingPool.splice(pickedIndex, 1);
+    }
+
+    selected.push(pickedCandidate);
+
+    const categoryKey = normalizeSelectionKey(pickedCandidate.categoryId);
+    const typeKey = getSelectionTypeKey(pickedCandidate);
+    const areaKey = getSelectionAreaKey(pickedCandidate);
+    categoryCounts.set(categoryKey, (categoryCounts.get(categoryKey) || 0) + 1);
+    typeCounts.set(typeKey, (typeCounts.get(typeKey) || 0) + 1);
+    if (areaKey) {
+      areaCounts.set(areaKey, (areaCounts.get(areaKey) || 0) + 1);
+    }
+  }
+
+  return selected;
+}
+
+async function enrichPlanningCandidates(candidates, mapsApiKey) {
   const snapshots = await Promise.all(
     candidates.map(async (candidate) => {
       try {
@@ -412,19 +564,9 @@ async function enrichPlanningCandidates(candidates, mapsApiKey, aiApiKey, destin
     };
   });
 
-  let aiVisitWindowById = new Map();
-  try {
-    const aiWindows = await estimatePlaceVisitWindows(mergedCandidates, aiApiKey, destinationContext);
-    aiVisitWindowById = new Map(
-      aiWindows.map((window) => [String(window.id || '').trim(), window]).filter(([id]) => id)
-    );
-  } catch {
-    aiVisitWindowById = new Map();
-  }
-
   return mergedCandidates.map((merged) => {
     const fallbackWindow = estimateVisitWindow(merged);
-    const visitWindow = normalizeAiVisitWindow(aiVisitWindowById.get(merged.id), fallbackWindow);
+    const visitWindow = normalizeAiVisitWindow(null, fallbackWindow);
 
     return {
       ...merged,
@@ -447,6 +589,7 @@ async function chooseNextCandidate({
   candidates,
 }) {
   const remainingMinutes = endMinute - currentMinute;
+  const isFirstLeg = !Array.isArray(itinerary) || itinerary.length === 0;
   if (!candidates.length) {
     return null;
   }
@@ -462,22 +605,31 @@ async function chooseNextCandidate({
     })
     .sort((a, b) => b.priorityScore - a.priorityScore);
 
-  const fallbackPool = scoredCandidates.slice(0, Math.min(3, scoredCandidates.length));
-  const fallback = fallbackPool[Math.floor(Math.random() * fallbackPool.length)] || candidates[0];
+  const firstLegPool = isFirstLeg
+    ? buildFirstLegPromptCandidates(scoredCandidates, Math.min(5, scoredCandidates.length))
+    : [];
+  const fallbackPool = isFirstLeg
+    ? firstLegPool
+    : scoredCandidates.slice(0, Math.min(3, scoredCandidates.length));
+  const fallback = isFirstLeg
+    ? pickWeightedCandidate(fallbackPool, (candidate) => Math.max(0.2, Number(candidate.priorityScore || 0))) || candidates[0]
+    : fallbackPool[Math.floor(Math.random() * fallbackPool.length)] || candidates[0];
   const fallbackMaxVisit = Math.min(
     fallback.maximumVisitMinutes,
     Math.max(fallback.minimumVisitMinutes, remainingMinutes - fallback.travelMinutes)
   );
 
   try {
-    const promptCandidates = [...scoredCandidates].sort((left, right) => {
-      const scoreDelta = Math.abs(right.priorityScore - left.priorityScore);
-      if (scoreDelta <= 4) {
-        return Math.random() - 0.5;
-      }
+    const promptCandidates = isFirstLeg
+      ? firstLegPool
+      : scoredCandidates.slice(0, Math.min(5, scoredCandidates.length)).sort((left, right) => {
+          const scoreDelta = Math.abs(right.priorityScore - left.priorityScore);
+          if (scoreDelta <= 4) {
+            return Math.random() - 0.5;
+          }
 
-      return right.priorityScore - left.priorityScore;
-    });
+          return right.priorityScore - left.priorityScore;
+        });
 
     // console.log(
     //   'Planning candidate list:',
@@ -524,20 +676,19 @@ async function chooseNextCandidate({
               address: stop.address || '',
               startTime: stop.startTime,
               endTime: stop.endTime,
-              categoryId: stop.categoryId,
-              travelMinutes: stop.travelMinutes,
-              visitMinutes: stop.visitMinutes
+              categoryId: stop.categoryId
             }))
           )}`
         : 'Itinerary so far: []',
       'Choose the single best next place from the candidate JSON.',
       'Only choose places physically located in the requested destination area.',
       'Use the full candidate address to reject places in other cities, regions, or countries even if the place name sounds related.',
-      'Prioritize high-confidence places with both excellent star ratings and substantial review volume.',
       'When multiple candidates are similarly strong, prefer variety over repeatedly picking the exact same famous place.',
+      isFirstLeg
+        ? 'For the first stop, avoid always defaulting to the same iconic place. If several options are strong, intentionally vary the opener across neighborhoods, vibes, and stop types from run to run.'
+        : 'Keep building variety without losing quality.',
       'A great itinerary should feel diverse in category, vibe, and stop type instead of repeating the same pattern.',
-      'A place with a high rating but very few reviews is weaker evidence than a place with a similarly high rating and hundreds or thousands of reviews.',
-      'Consider many factors together: rating, number of reviews, review snippet quality, editorial summary, open-now status, place type, travel time, visit duration fit, route efficiency, and how this stop shapes the rest of the itinerary.',
+      'Ignore how many reviews a place has. Use the star rating itself, review snippets, open-now status, place type, travel time, visit duration fit, route efficiency, and how this stop shapes the rest of the itinerary.',
       'Do not waste too much of the remaining window on one stop unless it is clearly the anchor experience and its quality justifies it.',
       'Avoid weakly reviewed or low-evidence places when stronger options exist.',
       'Return ONLY JSON in this exact shape:',
@@ -546,7 +697,7 @@ async function chooseNextCandidate({
       '- visitMinutes must be an integer within the candidate minVisitMinutes/maxVisitMinutes range.',
       '- The chosen stop must still fit inside the remaining minutes once travel is included.',
       '- Use review snippets and editorial summary as evidence, not filler.',
-      '- If two places are similar, prefer the one with stronger review volume and review quality evidence.',
+      '- Ignore review count when comparing places.',
       '- If two places are similarly strong, choose the more distinctive or less repetitive option.',
       JSON.stringify(
         promptCandidates.map((candidate) => ({
@@ -554,19 +705,17 @@ async function chooseNextCandidate({
           name: candidate.name,
           fullLocation: [candidate.name, candidate.address].filter(Boolean).join(' - '),
           address: candidate.address,
+          cityArea: getSelectionAreaKey(candidate),
           category: getCategoryLabel(candidate.categoryId),
           primaryType: candidate.primaryTypeDisplayName || candidate.primaryType || '',
           rating: candidate.rating,
-          userRatingCount: candidate.userRatingCount,
           priorityScore: Number(candidate.priorityScore?.toFixed?.(2) || candidate.priorityScore || 0),
-          prioritySignals: candidate.prioritySignals || {},
           travelMinutes: candidate.travelMinutes,
           minVisitMinutes: candidate.minimumVisitMinutes,
           recommendedVisitMinutes: candidate.recommendedVisitMinutes,
           maxVisitMinutes: candidate.maximumVisitMinutes,
-          durationRationale: candidate.visitDurationRationale,
           editorialSummary: candidate.editorialSummary || '',
-          reviewSnippets: candidate.reviewSnippets || [],
+          reviewSnippets: Array.isArray(candidate.reviewSnippets) ? candidate.reviewSnippets.slice(0, 2) : [],
           openNow:
             typeof candidate.openNow === 'boolean'
               ? candidate.openNow
@@ -630,13 +779,22 @@ async function computeNextPlanningStop({
 }) {
   const chosenPlaceIds = new Set(itinerary.map((stop) => String(stop.placeId || '')).filter(Boolean));
   const remainingMinutes = endMinute - currentMinute;
+  const isFirstLeg = !Array.isArray(itinerary) || itinerary.length === 0;
+  const searchCenters = buildPlanningSearchCenters({ center, itinerary });
 
   if (remainingMinutes <= 0) {
     return { done: true, message: 'No more stops fit in the remaining time.' };
   }
 
   const groupedResults = await Promise.all(
-    categories.map((categoryId) => searchCategoryPlaces(city, categoryId, center, mapsApiKey, categoryConfig))
+    categories.flatMap((categoryId) =>
+      searchCenters.map((searchCenter, index) =>
+        searchCategoryPlaces(city, categoryId, searchCenter, mapsApiKey, categoryConfig, {
+          maxResultCount: isFirstLeg ? 4 : index === 0 ? 5 : 4,
+          radiusMeters: isFirstLeg ? 18000 : 14000,
+        })
+      )
+    )
   );
 
   const uniqueById = new Map();
@@ -646,45 +804,49 @@ async function computeNextPlanningStop({
     }
   });
 
-  const withTravel = [];
+  const routeCandidates = pickCandidatesForTravelEstimates(
+    Array.from(uniqueById.values()),
+    Math.max(6, categories.length * 3)
+  );
+
+  const withTravelResults = [];
   const departureTime = buildDepartureDateTime(currentMinute);
-  for (const candidate of uniqueById.values()) {
-    const travelMinutes = await getTravelMinutes(currentLocation, candidate.location, mapsApiKey, {
-      departureTime,
-    });
-    const minimumTotalCost = travelMinutes + candidate.minimumVisitMinutes;
-    if (minimumTotalCost <= remainingMinutes) {
-      withTravel.push({
-        ...candidate,
-        baseTravelMinutes: travelMinutes,
-        travelMinutes,
-        totalCost: travelMinutes + candidate.recommendedVisitMinutes,
-        suggestedVisitMinutes: candidate.recommendedVisitMinutes
-      });
-    }
-  }
+  await Promise.all(
+    routeCandidates.map(async (candidate) => {
+      try {
+        const travelMinutes = await getTravelMinutes(currentLocation, candidate.location, mapsApiKey, {
+          departureTime,
+          allowApproximateFallback: true,
+        });
+
+        if (!Number.isFinite(travelMinutes)) {
+          return;
+        }
+
+        const minimumTotalCost = travelMinutes + candidate.minimumVisitMinutes;
+        if (minimumTotalCost <= remainingMinutes) {
+          withTravelResults.push({
+            ...candidate,
+            baseTravelMinutes: travelMinutes,
+            travelMinutes,
+            totalCost: travelMinutes + candidate.recommendedVisitMinutes,
+            suggestedVisitMinutes: candidate.recommendedVisitMinutes
+          });
+        }
+      } catch {
+        return;
+      }
+    })
+  );
+
+  const withTravel = withTravelResults.sort((left, right) => left.travelMinutes - right.travelMinutes);
 
   if (!withTravel.length) {
     return { done: true, message: 'No more stops fit in the remaining time.' };
   }
 
   const shortlistedCandidates = pickTopCandidates(withTravel, remainingMinutes, itinerary);
-  const trafficAdjustedCandidates = await applyTrafficAdjustedTravelTimes({
-    aiApiKey,
-    candidates: shortlistedCandidates,
-    city,
-    cityName,
-    currentMinute,
-    destinationContext,
-    itinerary,
-  });
-
-  const enrichedCandidates = await enrichPlanningCandidates(
-    trafficAdjustedCandidates,
-    mapsApiKey,
-    aiApiKey,
-    destinationContext || city
-  );
+  const enrichedCandidates = await enrichPlanningCandidates(shortlistedCandidates, mapsApiKey);
 
   const feasibleCandidates = enrichedCandidates.filter(
     (candidate) => candidate.travelMinutes + candidate.minimumVisitMinutes <= remainingMinutes
@@ -780,8 +942,6 @@ router.post('/next', async (req, res) => {
 
   const itinerary = (Array.isArray(body.itinerary) ? body.itinerary : [])
     .filter((stop) => stop && typeof stop === 'object');
-  const chosenPlaceIds = new Set(itinerary.map((stop) => String(stop.placeId || '')).filter(Boolean));
-
   const currentMinuteRaw = Number(body.currentMinute);
   const currentMinute = Number.isFinite(currentMinuteRaw)
     ? currentMinuteRaw
@@ -801,13 +961,11 @@ router.post('/next', async (req, res) => {
   try {
     if (!center) center = await findCityCenter(city, mapsApiKey);
 
-    const currentLocationInput = body.currentLocation;
-    const currentLocation =
-      Number.isFinite(Number(currentLocationInput?.lat)) && Number.isFinite(Number(currentLocationInput?.lng))
-        ? { lat: Number(currentLocationInput.lat), lng: Number(currentLocationInput.lng) }
-        : itinerary.length
-          ? itinerary[itinerary.length - 1].location
-          : center;
+    const currentLocation = resolvePlanningStartLocation({
+      currentLocationInput: body.currentLocation,
+      itinerary,
+      center,
+    });
 
     const nextStep = await computeNextPlanningStop({
       aiApiKey,
@@ -916,7 +1074,7 @@ router.post('/build', async (req, res) => {
   try {
     const center = await findCityCenter(city, mapsApiKey);
     let timelineMinute = start;
-    let currentLocation = center;
+    let currentLocation = getRandomCityStartLocation(center);
     const itinerary = [];
 
     while (timelineMinute < end) {

@@ -1,5 +1,65 @@
 const { parseDurationToMinutes } = require('../utils/time');
 
+function toRadians(value) {
+  return (Number(value) * Math.PI) / 180;
+}
+
+function hasValidLatLng(point) {
+  return (
+    point &&
+    Number.isFinite(Number(point.lat)) &&
+    Number.isFinite(Number(point.lng))
+  );
+}
+
+function estimateApproximateTravelMinutes(origin, destination) {
+  if (!hasValidLatLng(origin) || !hasValidLatLng(destination)) {
+    return 20;
+  }
+
+  const earthRadiusKm = 6371;
+  const lat1 = toRadians(origin.lat);
+  const lat2 = toRadians(destination.lat);
+  const deltaLat = toRadians(Number(destination.lat) - Number(origin.lat));
+  const deltaLng = toRadians(Number(destination.lng) - Number(origin.lng));
+  const haversineA =
+    Math.sin(deltaLat / 2) * Math.sin(deltaLat / 2) +
+    Math.cos(lat1) * Math.cos(lat2) * Math.sin(deltaLng / 2) * Math.sin(deltaLng / 2);
+  const distanceKm = earthRadiusKm * 2 * Math.atan2(Math.sqrt(haversineA), Math.sqrt(1 - haversineA));
+
+  const estimatedMinutes = distanceKm < 1
+    ? 6 + distanceKm * 8
+    : 8 + distanceKm * 4.8;
+
+  return Math.max(5, Math.min(120, Math.round(estimatedMinutes)));
+}
+
+function isRecoverableRouteError(message) {
+  return /timestamp must be set to a future time|could not compute route|no route|no routes|not reachable|route not found|zero results|failed_precondition/i.test(
+    String(message || '')
+  );
+}
+
+async function requestRouteDuration(requestBody, mapsApiKey) {
+  const response = await fetch('https://routes.googleapis.com/directions/v2:computeRoutes', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'X-Goog-Api-Key': mapsApiKey,
+      'X-Goog-FieldMask': 'routes.duration,routes.distanceMeters'
+    },
+    body: JSON.stringify(requestBody)
+  });
+
+  if (!response.ok) {
+    const err = await response.text();
+    throw new Error(`Routes API failed: ${err}`);
+  }
+
+  const data = await response.json();
+  return parseDurationToMinutes(data?.routes?.[0]?.duration);
+}
+
 // Returns the driving time in minutes between two lat/lng points.
 // Called for every candidate stop during planning to filter out places that
 // would bust the remaining time budget before Gemini picks the best one.
@@ -19,24 +79,37 @@ async function getTravelMinutes(origin, destination, mapsApiKey, options = {}) {
     requestBody.departureTime = options.departureTime;
   }
 
-  const response = await fetch('https://routes.googleapis.com/directions/v2:computeRoutes', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'X-Goog-Api-Key': mapsApiKey,
-      'X-Goog-FieldMask': 'routes.duration,routes.distanceMeters'
-    },
-    body: JSON.stringify(requestBody)
-  });
+  try {
+    return await requestRouteDuration(requestBody, mapsApiKey);
+  } catch (error) {
+    let latestError = error;
+    const errorMessage = String(latestError?.message || '');
+    const hasInvalidFutureTimestamp =
+      Boolean(options?.departureTime) &&
+      /Timestamp must be set to a future time/i.test(errorMessage);
 
-  if (!response.ok) {
-    const err = await response.text();
-    throw new Error(`Routes API failed: ${err}`);
+    if (hasInvalidFutureTimestamp) {
+      const safeFutureDepartureTime = new Date(Date.now() + 5 * 60 * 1000).toISOString();
+
+      try {
+        return await requestRouteDuration(
+          {
+            ...requestBody,
+            departureTime: safeFutureDepartureTime,
+          },
+          mapsApiKey,
+        );
+      } catch (retryError) {
+        latestError = retryError;
+      }
+    }
+
+    if (options?.allowApproximateFallback && isRecoverableRouteError(latestError?.message)) {
+      return estimateApproximateTravelMinutes(origin, destination);
+    }
+
+    throw latestError;
   }
-
-  const data = await response.json();
-  const durationText = data?.routes?.[0]?.duration;
-  return parseDurationToMinutes(durationText);
 }
 
 // Computes a single encoded polyline covering all itinerary stops in order.

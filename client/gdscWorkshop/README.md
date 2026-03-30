@@ -1,16 +1,142 @@
-# React + Vite
+# Client Setup
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+This folder contains the React + Vite frontend for the travel planner.
 
-Currently, two official plugins are available:
+The client is responsible for:
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+- the chat interface
+- Google Maps rendering
+- city exploration and map zoom behavior
+- itinerary display
+- stop details modals
 
-## React Compiler
+## Requirements
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+- Node.js 20+
+- npm
+- a Google Maps Platform API key
+- the backend server running locally or deployed somewhere reachable
 
-## Expanding the ESLint configuration
+## Install
 
-If you are developing a production application, we recommend using TypeScript with type-aware lint rules enabled. Check out the [TS template](https://github.com/vitejs/vite/tree/main/packages/create-vite/template-react-ts) for information on how to integrate TypeScript and [`typescript-eslint`](https://typescript-eslint.io) in your project.
+From inside this folder:
+
+```powershell
+npm install
+```
+
+## Environment Variables
+
+Create a file named `.env.local` inside this folder.
+
+Example:
+
+```env
+VITE_GOOGLE_MAPS_API_KEY=your_google_maps_api_key
+VITE_API_BASE_URL=http://localhost:5000
+```
+
+## Required Variables
+
+- `VITE_GOOGLE_MAPS_API_KEY`: required for loading the Google map in the frontend
+- `VITE_API_BASE_URL`: backend base URL used by the app
+
+For local development, `VITE_API_BASE_URL` should usually be:
+
+```env
+VITE_API_BASE_URL=http://localhost:5000
+```
+
+## Run In Development
+
+```powershell
+npm run dev
+```
+
+Default local URL:
+
+```text
+http://localhost:5173
+```
+
+## Build For Demo / Production
+
+```powershell
+npm run build
+```
+
+The build output is created in:
+
+```text
+dist
+```
+
+## Preview The Production Build
+
+```powershell
+npm run preview
+```
+
+## Main Scripts
+
+```json
+{
+	"dev": "vite",
+	"build": "vite build",
+	"preview": "vite preview"
+}
+```
+
+## Setup Checklist
+
+1. Open a terminal in `client/gdscWorkshop`
+2. Run `npm install`
+3. Create `client/gdscWorkshop/.env.local`
+4. Add `VITE_GOOGLE_MAPS_API_KEY`
+5. Set `VITE_API_BASE_URL` to your backend URL
+6. Run `npm run dev`
+7. Open `http://localhost:5173`
+
+## Common Problems
+
+### The map does not load
+
+Check:
+
+- `VITE_GOOGLE_MAPS_API_KEY` exists in `.env.local`
+- your Google Maps key allows localhost
+- the Maps JavaScript API is enabled
+
+### Frontend loads but planning fails
+
+Check:
+
+- the backend server is running
+- `VITE_API_BASE_URL` points to the correct backend
+- the backend has valid API keys configured
+
+### CORS or network errors
+
+Check both sides:
+
+- frontend `VITE_API_BASE_URL`
+- backend `CLIENT_ORIGIN`
+
+For local development they should usually be:
+
+```env
+# client/gdscWorkshop/.env.local
+VITE_API_BASE_URL=http://localhost:5000
+
+# server/.env
+CLIENT_ORIGIN=http://localhost:5173
+```
+
+## Folder Purpose
+
+Key files in this folder:
+
+- `src/App.jsx`: top-level frontend state and app shell
+- `src/components/chat-container/ChatContainer.jsx`: chat and planning flow
+- `src/components/map-overlay/MapOverlay.jsx`: Google Maps display and camera logic
+- `src/components/travel-stop-recommendation/`: itinerary UI

@@ -1,9 +1,6 @@
 Add to line 7 of popularCitiesService.js
 This allows us to get top 8 most popular cities, recommended by Gemini
 
-
-
-
 async function getPopularCitiesForCountry(country, aiApiKey) {
   const prompt = [
     'Return ONLY JSON in this shape: {"cities":[{"name":"City 1","rank":1}]}.',

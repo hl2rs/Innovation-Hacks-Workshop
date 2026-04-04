@@ -1,11 +1,41 @@
-const { parseJsonFromModelText } = require('../../utils/planning');
-const { extractTextValue, toDisplayText } = require('../../utils/placeFormatting');
+const { parseJsonFromModelText } = require('../utils/planning');
+const { extractTextValue, toDisplayText } = require('../utils/placeFormatting');
 
 const geminiModel = process.env.GEMINI_MODEL || 'gemini-2.5-flash';
 
 
 // ADD callGemini //
+async function callGemini(apiKey, prompt, options = {}) {
+  const body = {
+    contents: [{ role: 'user', parts: [{ text: prompt }] }]
+  };
 
+  if (options?.generationConfig && typeof options.generationConfig === 'object') {
+    body.generationConfig = options.generationConfig;
+  }
+
+  const response = await fetch(
+    `https://generativelanguage.googleapis.com/v1beta/models/${geminiModel}:generateContent?key=${apiKey}`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body)
+    }
+  );
+
+  if (!response.ok) {
+    const errorBody = await response.text();
+    throw new Error(`Gemini request failed: ${errorBody}`);
+  }
+
+  const data = await response.json();
+  const parts = data?.candidates?.[0]?.content?.parts || [];
+  return parts
+    .map((part) => part.text)
+    .filter(Boolean)
+    .join('\n')
+    .trim();
+}
 
 async function summarizePlaceExperience(place, aiApiKey) {
   const reviewSnippets = Array.isArray(place?.reviews)

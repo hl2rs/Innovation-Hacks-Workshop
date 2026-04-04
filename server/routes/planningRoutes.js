@@ -319,6 +319,15 @@ function getTodayWeekdayDescription(weekdayDescriptions, referenceDate = new Dat
 }
 
 // ADD isCandidateOpenToday //
+function isCandidateOpenToday(candidate, referenceDate = new Date()) {
+  const todayDescription = getTodayWeekdayDescription(candidate?.weekdayDescriptions, referenceDate);
+
+  if (!todayDescription) {
+    return true;
+  }
+
+  return !/\bclosed\b/i.test(todayDescription);
+}
 
 function resolvePlanningStartLocation({ currentLocationInput, itinerary, center }) {
   if (
@@ -347,6 +356,27 @@ function resolvePlanningSearchCenter({ center, itinerary }) {
 }
 
 // ADD buildStop //
+function buildStop(candidate, arrival, departure, mapsApiKey) {
+  return {
+    placeId: candidate.id,
+    name: candidate.name,
+    address: candidate.address,
+    categoryId: candidate.categoryId,
+    categoryLabel: getCategoryLabel(candidate.categoryId),
+    primaryType: candidate.primaryTypeDisplayName || candidate.primaryType || '',
+    rating: candidate.rating,
+    userRatingCount: candidate.userRatingCount,
+    travelMinutes: candidate.travelMinutes,
+    visitMinutes: candidate.suggestedVisitMinutes,
+    visitDurationRationale: candidate.visitDurationRationale || '',
+    location: candidate.location,
+    photoUrl: buildStopPhotoUrl(candidate.photoName, mapsApiKey),
+    startTime: formatHour(arrival),
+    endTime: formatHour(departure),
+    aiReason: candidate.aiReason || '',
+    nextStep: candidate.nextStep || ''
+  };
+}
 
 function normalizeAiVisitWindow(rawWindow, fallbackWindow) {
   const minimumVisitMinutes = Math.max(
@@ -498,10 +528,246 @@ function buildFirstLegPromptCandidates(scoredCandidates, limit = 5) {
   return selected;
 }
 
-// ADD enrichPlanning Candidates //
+// ADD enrichPlanningCandidates //
+async function enrichPlanningCandidates(candidates, mapsApiKey) {
+  const snapshots = await Promise.all(
+    candidates.map(async (candidate) => {
+      try {
+        return await getPlanningPlaceSnapshot(candidate.id, mapsApiKey);
+      } catch {
+        return null;
+      }
+    })
+  );
 
+  const mergedCandidates = candidates.map((candidate, index) => {
+    const snapshot = snapshots[index];
+    const merged = {
+      ...candidate,
+      primaryType: snapshot?.primaryType || candidate.primaryType,
+      primaryTypeDisplayName:
+        snapshot?.primaryTypeDisplayName || candidate.primaryTypeDisplayName || candidate.primaryType,
+      editorialSummary: snapshot?.editorialSummary || '',
+      openNow: snapshot?.openNow,
+      weekdayDescriptions: snapshot?.weekdayDescriptions || [],
+      reviewSnippets: Array.isArray(snapshot?.reviews)
+        ? snapshot.reviews
+            .map((review) => ({
+              rating: Number(review?.rating || 0),
+              text: String(review?.text || '').trim()
+            }))
+            .filter((review) => review.text)
+            .slice(0, 3)
+        : []
+    };
+
+    return {
+      ...merged,
+      categoryLabel: getCategoryLabel(candidate.categoryId),
+    };
+  });
+
+  return mergedCandidates.map((merged) => {
+    const fallbackWindow = estimateVisitWindow(merged);
+    const visitWindow = normalizeAiVisitWindow(null, fallbackWindow);
+
+    return {
+      ...merged,
+      ...visitWindow,
+      suggestedVisitMinutes: visitWindow.recommendedVisitMinutes,
+      totalCost: merged.travelMinutes + visitWindow.recommendedVisitMinutes
+    };
+  });
+}
 // ADD chooseNextCandidate // 
+async function chooseNextCandidate({
+  aiApiKey,
+  city,
+  cityName,
+  destinationContext,
+  categories,
+  currentMinute,
+  endMinute,
+  itinerary,
+  candidates,
+}) {
+  const remainingMinutes = endMinute - currentMinute;
+  const isFirstLeg = !Array.isArray(itinerary) || itinerary.length === 0;
+  if (!candidates.length) {
+    return null;
+  }
 
+  const scoredCandidates = candidates
+    .map((candidate) => {
+      const priority = computeCandidatePriorityScore(candidate, remainingMinutes, itinerary);
+      return {
+        ...candidate,
+        priorityScore: priority.score,
+        prioritySignals: priority.signals,
+      };
+    })
+    .sort((a, b) => b.priorityScore - a.priorityScore);
+
+  const firstLegPool = isFirstLeg
+    ? buildFirstLegPromptCandidates(scoredCandidates, Math.min(5, scoredCandidates.length))
+    : [];
+  const fallbackPool = isFirstLeg
+    ? firstLegPool
+    : scoredCandidates.slice(0, Math.min(3, scoredCandidates.length));
+  const fallback = isFirstLeg
+    ? pickWeightedCandidate(fallbackPool, (candidate) => Math.max(0.2, Number(candidate.priorityScore || 0))) || candidates[0]
+    : fallbackPool[Math.floor(Math.random() * fallbackPool.length)] || candidates[0];
+  const fallbackMaxVisit = Math.min(
+    fallback.maximumVisitMinutes,
+    Math.max(fallback.minimumVisitMinutes, remainingMinutes - fallback.travelMinutes)
+  );
+
+  try {
+    const promptCandidates = isFirstLeg
+      ? firstLegPool
+      : scoredCandidates.slice(0, Math.min(5, scoredCandidates.length)).sort((left, right) => {
+          const scoreDelta = Math.abs(right.priorityScore - left.priorityScore);
+          if (scoreDelta <= 4) {
+            return Math.random() - 0.5;
+          }
+
+          return right.priorityScore - left.priorityScore;
+        });
+
+    // console.log(
+    //   'Planning candidate list:',
+    //   JSON.stringify(
+    //     promptCandidates.map((candidate) => ({
+    //       id: candidate.id,
+    //       name: candidate.name,
+    //       address: candidate.address,
+    //       category: getCategoryLabel(candidate.categoryId),
+    //       primaryType: candidate.primaryTypeDisplayName || candidate.primaryType || '',
+    //       rating: candidate.rating,
+    //       userRatingCount: candidate.userRatingCount,
+    //       priorityScore: Number(candidate.priorityScore?.toFixed?.(2) || candidate.priorityScore || 0),
+    //       travelMinutes: candidate.travelMinutes,
+    //       minimumVisitMinutes: candidate.minimumVisitMinutes,
+    //       recommendedVisitMinutes: candidate.recommendedVisitMinutes,
+    //       maximumVisitMinutes: candidate.maximumVisitMinutes,
+    //       openNow:
+    //         typeof candidate.openNow === 'boolean'
+    //           ? candidate.openNow
+    //           : 'unknown',
+    //       weekdayDescriptions: Array.isArray(candidate.weekdayDescriptions)
+    //         ? candidate.weekdayDescriptions
+    //         : [],
+    //     })),
+    //     null,
+    //     2,
+    //   ),
+    // );
+
+    const analysisPrompt = [
+      'You are choosing the next stop in a travel itinerary.',
+      `Destination city name: ${cityName || city}`,
+      `Destination search query: ${city}`,
+      `Destination context: ${destinationContext || city}`,
+      `Selected interests: ${categories.map(getCategoryLabel).join(', ')}`,
+      `Current time: ${formatHour(currentMinute)}`,
+      `End of planning window: ${formatHour(endMinute)}`,
+      `Remaining minutes: ${remainingMinutes}`,
+      itinerary.length
+        ? `Itinerary so far: ${JSON.stringify(
+            itinerary.map((stop) => ({
+              name: stop.name,
+              address: stop.address || '',
+              startTime: stop.startTime,
+              endTime: stop.endTime,
+              categoryId: stop.categoryId
+            }))
+          )}`
+        : 'Itinerary so far: []',
+      'Choose the single best next place from the candidate JSON.',
+      'Only choose places physically located in the requested destination area.',
+      'Use the full candidate address to reject places in other cities, regions, or countries even if the place name sounds related.',
+      'When multiple candidates are similarly strong, prefer variety over repeatedly picking the exact same famous place.',
+      isFirstLeg
+        ? 'For the first stop, avoid always defaulting to the same iconic place. If several options are strong, intentionally vary the opener across neighborhoods, vibes, and stop types from run to run.'
+        : 'Keep building variety without losing quality.',
+      'A great itinerary should feel diverse in category, vibe, and stop type instead of repeating the same pattern.',
+      'Ignore how many reviews a place has. Use the star rating itself, review snippets, open-now status, place type, travel time, visit duration fit, route efficiency, and how this stop shapes the rest of the itinerary.',
+      'Do not waste too much of the remaining window on one stop unless it is clearly the anchor experience and its quality justifies it.',
+      'Avoid weakly reviewed or low-evidence places when stronger options exist.',
+      'Return ONLY JSON in this exact shape:',
+      '{"selectedId":"<place id>","visitMinutes":75,"reason":"<why this stop now>","nextStep":"<brief transition toward what should come after>"}',
+      'Rules:',
+      '- visitMinutes must be an integer within the candidate minVisitMinutes/maxVisitMinutes range.',
+      '- The chosen stop must still fit inside the remaining minutes once travel is included.',
+      '- Use review snippets and editorial summary as evidence, not filler.',
+      '- Ignore review count when comparing places.',
+      '- If two places are similarly strong, choose the more distinctive or less repetitive option.',
+      JSON.stringify(
+        promptCandidates.map((candidate) => ({
+          id: candidate.id,
+          name: candidate.name,
+          fullLocation: [candidate.name, candidate.address].filter(Boolean).join(' - '),
+          address: candidate.address,
+          cityArea: getSelectionAreaKey(candidate),
+          category: getCategoryLabel(candidate.categoryId),
+          primaryType: candidate.primaryTypeDisplayName || candidate.primaryType || '',
+          rating: candidate.rating,
+          priorityScore: Number(candidate.priorityScore?.toFixed?.(2) || candidate.priorityScore || 0),
+          travelMinutes: candidate.travelMinutes,
+          minVisitMinutes: candidate.minimumVisitMinutes,
+          recommendedVisitMinutes: candidate.recommendedVisitMinutes,
+          maxVisitMinutes: candidate.maximumVisitMinutes,
+          editorialSummary: candidate.editorialSummary || '',
+          reviewSnippets: Array.isArray(candidate.reviewSnippets) ? candidate.reviewSnippets.slice(0, 2) : [],
+          openNow:
+            typeof candidate.openNow === 'boolean'
+              ? candidate.openNow
+              : 'unknown'
+        }))
+      )
+    ].join('\n');
+
+    const analysis = await callGemini(aiApiKey, analysisPrompt, {
+      generationConfig: {
+        temperature: 0.9,
+        topP: 0.95,
+      },
+    });
+    const parsed = parseJsonFromModelText(analysis);
+    const picked = scoredCandidates.find((candidate) => candidate.id === parsed?.selectedId);
+
+    if (!picked) {
+      return {
+        ...fallback,
+        suggestedVisitMinutes: fallbackMaxVisit,
+        aiReason: '',
+        nextStep: ''
+      };
+    }
+
+    const maxVisitMinutes = Math.min(
+      picked.maximumVisitMinutes,
+      Math.max(picked.minimumVisitMinutes, remainingMinutes - picked.travelMinutes)
+    );
+    const visitMinutes = clampMinutes(parsed?.visitMinutes, picked.minimumVisitMinutes, maxVisitMinutes);
+
+    return {
+      ...picked,
+      suggestedVisitMinutes: visitMinutes,
+      aiReason: String(parsed?.reason || '').trim(),
+      nextStep: String(parsed?.nextStep || '').trim()
+    };
+  } catch {
+    return {
+      ...fallback,
+      suggestedVisitMinutes: fallbackMaxVisit,
+      aiReason: '',
+      nextStep: ''
+    };
+  }
+}
+ 
+// ADD computeNextPlanningStop // 
 async function computeNextPlanningStop({
   aiApiKey,
   mapsApiKey,
@@ -642,6 +908,7 @@ async function computeNextPlanningStop({
     currentLocation: finalCandidate.location,
   };
 }
+
 
 // Streaming itinerary builder (step-by-step) — called repeatedly by the client,
 // once per stop, each call carrying the itinerary built so far.

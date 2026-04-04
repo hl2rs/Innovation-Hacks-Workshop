@@ -396,6 +396,94 @@ function pickCandidatesForTravelEstimates(candidates, limit = 10) {
 }
 
 // ADD pickTopCandidates // 
+function pickTopCandidates(candidates, remainingMinutes, itinerary = []) {
+  const scored = candidates
+    .map((candidate) => {
+      const priority = computeCandidatePriorityScore(candidate, remainingMinutes, itinerary);
+      return {
+        ...candidate,
+        priorityScore: priority.score,
+        prioritySignals: priority.signals,
+      };
+    })
+    .sort((a, b) => b.priorityScore - a.priorityScore);
+
+  if (!scored.length) {
+    return [];
+  }
+
+  const bestScore = scored[0].priorityScore;
+  const shortlistLimit = Math.min(5, scored.length);
+  const shortlistPool = shuffleArray(
+    scored.filter((candidate, index) => index < 10 || candidate.priorityScore >= bestScore - 8)
+  );
+
+  const selected = [];
+  const categoryCounts = new Map();
+  const typeCounts = new Map();
+  const areaCounts = new Map();
+
+  while (shortlistPool.length && selected.length < shortlistLimit) {
+    shortlistPool.sort((left, right) => {
+      const leftCategoryKey = normalizeTextKey(left.categoryId);
+      const rightCategoryKey = normalizeTextKey(right.categoryId);
+      const leftTypeKey = getCandidateTypeKey(left);
+      const rightTypeKey = getCandidateTypeKey(right);
+      const leftAreaKey = getCandidateAreaKey(left);
+      const rightAreaKey = getCandidateAreaKey(right);
+      const leftDiversityPenalty =
+        (categoryCounts.get(leftCategoryKey) || 0) * 3.5 +
+        (typeCounts.get(leftTypeKey) || 0) * 2.5 +
+        (areaCounts.get(leftAreaKey) || 0) * 3;
+      const rightDiversityPenalty =
+        (categoryCounts.get(rightCategoryKey) || 0) * 3.5 +
+        (typeCounts.get(rightTypeKey) || 0) * 2.5 +
+        (areaCounts.get(rightAreaKey) || 0) * 3;
+      const leftSelectionScore = left.priorityScore - leftDiversityPenalty + (Math.random() - 0.5) * 6;
+      const rightSelectionScore = right.priorityScore - rightDiversityPenalty + (Math.random() - 0.5) * 6;
+      return rightSelectionScore - leftSelectionScore;
+    });
+
+    const nextCandidate = shortlistPool.shift();
+    if (!nextCandidate) {
+      break;
+    }
+
+    const categoryKey = normalizeTextKey(nextCandidate.categoryId);
+    const typeKey = getCandidateTypeKey(nextCandidate);
+    const areaKey = getCandidateAreaKey(nextCandidate);
+    const categoryCount = categoryCounts.get(categoryKey) || 0;
+    const typeCount = typeCounts.get(typeKey) || 0;
+    const areaCount = areaCounts.get(areaKey) || 0;
+
+    if (categoryCount >= 2 || typeCount >= 2) {
+      continue;
+    }
+
+    if (areaKey && areaCount >= 2 && Math.random() < 0.75) {
+      continue;
+    }
+
+    selected.push(nextCandidate);
+    categoryCounts.set(categoryKey, categoryCount + 1);
+    typeCounts.set(typeKey, typeCount + 1);
+    if (areaKey) {
+      areaCounts.set(areaKey, areaCount + 1);
+    }
+  }
+
+  if (selected.length < shortlistLimit) {
+    scored.forEach((candidate) => {
+      if (selected.length >= shortlistLimit || selected.some((selectedCandidate) => selectedCandidate.id === candidate.id)) {
+        return;
+      }
+
+      selected.push(candidate);
+    });
+  }
+
+  return selected;
+}
 
 module.exports = {
   clampMinutes,

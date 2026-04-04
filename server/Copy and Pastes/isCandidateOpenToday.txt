@@ -1,0 +1,12 @@
+Add to line 321 of planningRoutes.js
+Checks if a place is open on a specific day
+
+function isCandidateOpenToday(candidate, referenceDate = new Date()) {
+  const todayDescription = getTodayWeekdayDescription(candidate?.weekdayDescriptions, referenceDate);
+
+  if (!todayDescription) {
+    return true;
+  }
+
+  return !/\bclosed\b/i.test(todayDescription);
+}

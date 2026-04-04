@@ -1,0 +1,24 @@
+Add to line 357 of planningRoutes.js
+Takes a candidate and makes it the final intinerary stop
+
+function buildStop(candidate, arrival, departure, mapsApiKey) {
+  return {
+    placeId: candidate.id,
+    name: candidate.name,
+    address: candidate.address,
+    categoryId: candidate.categoryId,
+    categoryLabel: getCategoryLabel(candidate.categoryId),
+    primaryType: candidate.primaryTypeDisplayName || candidate.primaryType || '',
+    rating: candidate.rating,
+    userRatingCount: candidate.userRatingCount,
+    travelMinutes: candidate.travelMinutes,
+    visitMinutes: candidate.suggestedVisitMinutes,
+    visitDurationRationale: candidate.visitDurationRationale || '',
+    location: candidate.location,
+    photoUrl: buildStopPhotoUrl(candidate.photoName, mapsApiKey),
+    startTime: formatHour(arrival),
+    endTime: formatHour(departure),
+    aiReason: candidate.aiReason || '',
+    nextStep: candidate.nextStep || ''
+  };
+}

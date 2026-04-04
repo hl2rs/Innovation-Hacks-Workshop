@@ -1,0 +1,53 @@
+Add to line 529 of planningRoutes.js
+Takes the shortlist and adds rich details, needed before final selection of the next place
+
+async function enrichPlanningCandidates(candidates, mapsApiKey) {
+  const snapshots = await Promise.all(
+    candidates.map(async (candidate) => {
+      try {
+        return await getPlanningPlaceSnapshot(candidate.id, mapsApiKey);
+      } catch {
+        return null;
+      }
+    })
+  );
+
+  const mergedCandidates = candidates.map((candidate, index) => {
+    const snapshot = snapshots[index];
+    const merged = {
+      ...candidate,
+      primaryType: snapshot?.primaryType || candidate.primaryType,
+      primaryTypeDisplayName:
+        snapshot?.primaryTypeDisplayName || candidate.primaryTypeDisplayName || candidate.primaryType,
+      editorialSummary: snapshot?.editorialSummary || '',
+      openNow: snapshot?.openNow,
+      weekdayDescriptions: snapshot?.weekdayDescriptions || [],
+      reviewSnippets: Array.isArray(snapshot?.reviews)
+        ? snapshot.reviews
+            .map((review) => ({
+              rating: Number(review?.rating || 0),
+              text: String(review?.text || '').trim()
+            }))
+            .filter((review) => review.text)
+            .slice(0, 3)
+        : []
+    };
+
+    return {
+      ...merged,
+      categoryLabel: getCategoryLabel(candidate.categoryId),
+    };
+  });
+
+  return mergedCandidates.map((merged) => {
+    const fallbackWindow = estimateVisitWindow(merged);
+    const visitWindow = normalizeAiVisitWindow(null, fallbackWindow);
+
+    return {
+      ...merged,
+      ...visitWindow,
+      suggestedVisitMinutes: visitWindow.recommendedVisitMinutes,
+      totalCost: merged.travelMinutes + visitWindow.recommendedVisitMinutes
+    };
+  });
+}

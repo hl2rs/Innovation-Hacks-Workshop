@@ -1,0 +1,143 @@
+Add to line 768 of planningRoutes.js
+It is the main pipeline that chooses one next stop for the itinerary
+
+async function computeNextPlanningStop({
+  aiApiKey,
+  mapsApiKey,
+  city,
+  cityName,
+  destinationContext,
+  categories,
+  center,
+  currentLocation,
+  currentMinute,
+  endMinute,
+  itinerary,
+}) {
+  const chosenPlaceIds = new Set(itinerary.map((stop) => String(stop.placeId || '')).filter(Boolean));
+  const remainingMinutes = endMinute - currentMinute;
+  const isFirstLeg = !Array.isArray(itinerary) || itinerary.length === 0;
+  const searchCenters = buildPlanningSearchCenters({ center, itinerary });
+
+  if (remainingMinutes <= 0) {
+    return { done: true, message: 'No more stops fit in the remaining time.' };
+  }
+
+  const groupedResults = await Promise.all(
+    categories.flatMap((categoryId) =>
+      searchCenters.map((searchCenter, index) =>
+        searchCategoryPlaces(city, categoryId, searchCenter, mapsApiKey, categoryConfig, {
+          maxResultCount: isFirstLeg ? 4 : index === 0 ? 5 : 4,
+          radiusMeters: isFirstLeg ? 18000 : 14000,
+        })
+      )
+    )
+  );
+
+  const uniqueById = new Map();
+  groupedResults.flat().forEach((place) => {
+    if (!chosenPlaceIds.has(place.id) && !uniqueById.has(place.id)) {
+      uniqueById.set(place.id, place);
+    }
+  });
+
+  const routeCandidates = pickCandidatesForTravelEstimates(
+    Array.from(uniqueById.values()),
+    Math.max(6, categories.length * 3)
+  );
+
+  const withTravelResults = [];
+  const departureTime = buildDepartureDateTime(currentMinute);
+  await Promise.all(
+    routeCandidates.map(async (candidate) => {
+      try {
+        const travelMinutes = await getTravelMinutes(currentLocation, candidate.location, mapsApiKey, {
+          departureTime,
+          allowApproximateFallback: true,
+        });
+
+        if (!Number.isFinite(travelMinutes)) {
+          return;
+        }
+
+        const minimumTotalCost = travelMinutes + candidate.minimumVisitMinutes;
+        if (minimumTotalCost <= remainingMinutes) {
+          withTravelResults.push({
+            ...candidate,
+            baseTravelMinutes: travelMinutes,
+            travelMinutes,
+            totalCost: travelMinutes + candidate.recommendedVisitMinutes,
+            suggestedVisitMinutes: candidate.recommendedVisitMinutes
+          });
+        }
+      } catch {
+        return;
+      }
+    })
+  );
+
+  const withTravel = withTravelResults.sort((left, right) => left.travelMinutes - right.travelMinutes);
+
+  if (!withTravel.length) {
+    return { done: true, message: 'No more stops fit in the remaining time.' };
+  }
+
+  const shortlistedCandidates = pickTopCandidates(withTravel, remainingMinutes, itinerary);
+  const enrichedCandidates = await enrichPlanningCandidates(shortlistedCandidates, mapsApiKey);
+
+  const feasibleCandidates = enrichedCandidates.filter(
+    (candidate) => candidate.travelMinutes + candidate.minimumVisitMinutes <= remainingMinutes
+  );
+
+  const openTodayCandidates = feasibleCandidates.filter((candidate) => isCandidateOpenToday(candidate));
+
+  if (!openTodayCandidates.length) {
+    return { done: true, message: 'No more stops fit in the remaining time.' };
+  }
+
+  const selected = await chooseNextCandidate({
+    aiApiKey,
+    city,
+    cityName,
+    destinationContext,
+    categories,
+    currentMinute,
+    endMinute,
+    itinerary,
+    candidates: openTodayCandidates
+  });
+
+  if (!selected) {
+    return { done: true, message: 'No more stops fit in the remaining time.' };
+  }
+
+  const fallbackSelected =
+    Math.ceil((currentMinute + selected.travelMinutes) / 5) * 5 + selected.minimumVisitMinutes > endMinute
+      ? openTodayCandidates.find((candidate) =>
+          Math.ceil((currentMinute + candidate.travelMinutes) / 5) * 5 + candidate.minimumVisitMinutes <= endMinute
+        ) || null
+      : null;
+
+  const finalCandidate = fallbackSelected || selected;
+  const arrival = Math.ceil((currentMinute + finalCandidate.travelMinutes) / 5) * 5;
+  const maxAvailableVisitMinutes = endMinute - arrival;
+
+  if (maxAvailableVisitMinutes < finalCandidate.minimumVisitMinutes) {
+    return { done: true, message: 'No more stops fit in the remaining time.' };
+  }
+
+  finalCandidate.suggestedVisitMinutes = clampMinutes(
+    finalCandidate.suggestedVisitMinutes,
+    finalCandidate.minimumVisitMinutes,
+    Math.min(finalCandidate.maximumVisitMinutes, maxAvailableVisitMinutes)
+  );
+
+  const departure = Math.ceil((arrival + finalCandidate.suggestedVisitMinutes) / 5) * 5;
+
+  return {
+    done: false,
+    stop: buildStop(finalCandidate, arrival, departure, mapsApiKey),
+    currentMinute: departure,
+    currentLocation: finalCandidate.location,
+  };
+}

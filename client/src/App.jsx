@@ -1,9 +1,14 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import './App.css';
 import MapOverlay from './components/map-overlay/MapOverlay';
 import ChatContainer from './components/chat-container/ChatContainer';
 
 export default function App() {
+  const desktopMinChatPanelWidth = 340;
+  const desktopDefaultChatPanelWidth = 660;
+  const desktopHorizontalOffset = 24;
+
+  const chatPanelRef = useRef(null);
   const [mapsReady, setMapsReady] = useState(false);
   const [mapsError, setMapsError] = useState('');
   const [selectedCountry, setSelectedCountry] = useState('');
@@ -18,6 +23,51 @@ export default function App() {
   const [findingCities, setFindingCities] = useState(false);
   const [findCitiesError, setFindCitiesError] = useState('');
   const [detailsOpen, setDetailsOpen] = useState(false);
+  const [isMobileLayout, setIsMobileLayout] = useState(() => window.innerWidth <= 900);
+  const [chatPanelWidth, setChatPanelWidth] = useState(() => {
+    const maxDesktopWidth = Math.max(
+      desktopMinChatPanelWidth,
+      window.innerWidth - desktopHorizontalOffset * 2,
+    );
+
+    return Math.min(desktopDefaultChatPanelWidth, maxDesktopWidth);
+  });
+  const [isResizingChatPanel, setIsResizingChatPanel] = useState(false);
+
+  useEffect(() => {
+    const handleWindowResize = () => {
+      const mobileNow = window.innerWidth <= 900;
+      setIsMobileLayout(mobileNow);
+
+      if (!mobileNow) {
+        setChatPanelWidth((currentWidth) => {
+          const maxWidth = Math.max(desktopMinChatPanelWidth, window.innerWidth - desktopHorizontalOffset * 2);
+          return Math.min(Math.max(currentWidth, desktopMinChatPanelWidth), maxWidth);
+        });
+      }
+    };
+
+    window.addEventListener('resize', handleWindowResize);
+    return () => {
+      window.removeEventListener('resize', handleWindowResize);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!isResizingChatPanel) {
+      document.body.style.removeProperty('cursor');
+      document.body.style.removeProperty('user-select');
+      return undefined;
+    }
+
+    document.body.style.cursor = 'ew-resize';
+    document.body.style.userSelect = 'none';
+
+    return () => {
+      document.body.style.removeProperty('cursor');
+      document.body.style.removeProperty('user-select');
+    };
+  }, [isResizingChatPanel]);
 
   useEffect(() => {
     const apiKey = import.meta.env.VITE_GOOGLE_MAPS_API_KEY;
@@ -136,6 +186,38 @@ export default function App() {
     });
   };
 
+  const handleResizePointerDown = (event) => {
+    if (isMobileLayout || !chatPanelRef.current) {
+      return;
+    }
+
+    event.preventDefault();
+    setIsResizingChatPanel(true);
+
+    const chatPanelLeft = chatPanelRef.current.getBoundingClientRect().left;
+
+    const handlePointerMove = (moveEvent) => {
+      const nextWidth = moveEvent.clientX - chatPanelLeft;
+      const clampedWidth = Math.max(
+        desktopMinChatPanelWidth,
+        Math.min(nextWidth, Math.max(desktopMinChatPanelWidth, window.innerWidth - desktopHorizontalOffset * 2)),
+      );
+
+      setChatPanelWidth(clampedWidth);
+    };
+
+    const stopResizing = () => {
+      setIsResizingChatPanel(false);
+      window.removeEventListener('pointermove', handlePointerMove);
+      window.removeEventListener('pointerup', stopResizing);
+      window.removeEventListener('pointercancel', stopResizing);
+    };
+
+    window.addEventListener('pointermove', handlePointerMove);
+    window.addEventListener('pointerup', stopResizing);
+    window.addEventListener('pointercancel', stopResizing);
+  };
+
   return (
     <div className="app">
       <MapOverlay
@@ -152,7 +234,11 @@ export default function App() {
         plannedItinerary={plannedItinerary}
         recommendedCities={recommendedCities}
       />
-      <aside className={`chat-panel ${detailsOpen ? 'chat-panel--details-open' : ''}`.trim()}>
+      <aside
+        ref={chatPanelRef}
+        className={`chat-panel ${detailsOpen ? 'chat-panel--details-open' : ''} ${isResizingChatPanel ? 'chat-panel--resizing' : ''}`.trim()}
+        style={!isMobileLayout ? { width: `${Math.min(chatPanelWidth, Math.max(desktopMinChatPanelWidth, window.innerWidth - desktopHorizontalOffset * 2))}px` } : undefined}
+      >
         <ChatContainer
           onFindCities={handleFindCities}
           onCitySelected={handleCitySelected}
@@ -168,6 +254,14 @@ export default function App() {
           findingCities={findingCities}
           findCitiesError={findCitiesError}
         />
+        {!isMobileLayout && (
+          <button
+            type="button"
+            className="chat-panel-resize-handle"
+            aria-label="Resize chat panel"
+            onPointerDown={handleResizePointerDown}
+          />
+        )}
       </aside>
     </div>
   );

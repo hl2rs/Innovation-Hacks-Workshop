@@ -1,4 +1,5 @@
 import React, { useEffect } from 'react';
+import { createPortal } from 'react-dom';
 import './TravelStopDetails.css';
 
 function formatBooleanLabel(value, yesLabel, noLabel = 'Not available') {
@@ -28,6 +29,8 @@ export default function TravelStopDetails({
   error,
   onClose,
 }) {
+  const portalTarget = document.querySelector('.chat-container') || document.body;
+
   useEffect(() => {
     if (!stop) {
       return undefined;
@@ -68,7 +71,7 @@ export default function TravelStopDetails({
     ? details.weekdayDescriptions.filter(Boolean)
     : [];
 
-  return (
+  return createPortal(
     <div className={modalClassName} role="dialog" aria-modal="true" aria-labelledby="travel-stop-details-title">
       <button className="travel-stop-details-backdrop" type="button" aria-label="Close details" onClick={onClose} disabled={closing} />
       <div className="travel-stop-details-panel">
@@ -243,6 +246,7 @@ export default function TravelStopDetails({
           </div>
         )}
       </div>
-    </div>
+    </div>,
+    portalTarget,
   );
 }

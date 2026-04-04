@@ -72,7 +72,6 @@ export default function App() {
   useEffect(() => {
     const apiKey = import.meta.env.VITE_GOOGLE_MAPS_API_KEY;
     const mapsScriptUrl = `https://maps.googleapis.com/maps/api/js?key=${apiKey}&v=weekly&libraries=places`;
-
     if (!apiKey) {
       setMapsError('Missing VITE_GOOGLE_MAPS_API_KEY in .env.local');
       return;

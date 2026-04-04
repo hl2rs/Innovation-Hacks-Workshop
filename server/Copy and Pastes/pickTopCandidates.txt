@@ -1,5 +1,5 @@
-Add to line 401 of planning.js
-
+Add to planning.js
+Builds a list of candidates to stop at
 
 function pickTopCandidates(candidates, remainingMinutes, itinerary = []) {
   const scored = candidates

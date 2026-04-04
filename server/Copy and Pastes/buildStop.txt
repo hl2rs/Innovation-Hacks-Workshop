@@ -1,4 +1,4 @@
-Add to line 357 of planningRoutes.js
+Add to planningRoutes.js
 Takes a candidate and makes it the final intinerary stop
 
 function buildStop(candidate, arrival, departure, mapsApiKey) {

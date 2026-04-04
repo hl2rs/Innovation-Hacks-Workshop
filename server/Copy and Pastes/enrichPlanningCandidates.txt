@@ -1,4 +1,4 @@
-Add to line 529 of planningRoutes.js
+Add to planningRoutes.js
 Takes the shortlist and adds rich details, needed before final selection of the next place
 
 async function enrichPlanningCandidates(candidates, mapsApiKey) {

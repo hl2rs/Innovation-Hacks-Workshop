@@ -1,4 +1,4 @@
-Add to line 321 of planningRoutes.js
+Add to planningRoutes.js
 Checks if a place is open on a specific day
 
 function isCandidateOpenToday(candidate, referenceDate = new Date()) {

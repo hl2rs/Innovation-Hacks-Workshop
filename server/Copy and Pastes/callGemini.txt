@@ -1,4 +1,4 @@
-Add to line 11 of geminiService.js
+Add to geminiService.js
 This allows us to call Gemini
 
 async function callGemini(apiKey, prompt, options = {}) {

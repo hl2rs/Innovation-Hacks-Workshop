@@ -1,4 +1,4 @@
-Add to line 580 of planningRoutes.js
+Add to planningRoutes.js
 Final selection to pick stop from candidate list. Scores every candidate among other things.
 
 async function chooseNextCandidate({

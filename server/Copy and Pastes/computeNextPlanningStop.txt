@@ -1,4 +1,4 @@
-Add to line 768 of planningRoutes.js
+Add to planningRoutes.js
 It is the main pipeline that chooses one next stop for the itinerary
 
 async function computeNextPlanningStop({

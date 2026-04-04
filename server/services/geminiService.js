@@ -1,48 +1,12 @@
-const { parseJsonFromModelText } = require('../utils/planning');
-const { extractTextValue, toDisplayText } = require('../utils/placeFormatting');
+const { parseJsonFromModelText } = require('../../utils/planning');
+const { extractTextValue, toDisplayText } = require('../../utils/placeFormatting');
 
 const geminiModel = process.env.GEMINI_MODEL || 'gemini-2.5-flash';
 
-// Core wrapper for all Gemini generateContent calls. Used by:
-//   - summarizePlaceExperience  → AI Overview for the place detail panel
-//   - getPopularCitiesForCountry → city rank list when a country is entered
-//   - planning/next & planning/build → selecting the best itinerary stop
-//   - POST /api/gemini/chat → direct user chat messages from the UI
-async function callGemini(apiKey, prompt, options = {}) {
-  const body = {
-    contents: [{ role: 'user', parts: [{ text: prompt }] }]
-  };
 
-  if (options?.generationConfig && typeof options.generationConfig === 'object') {
-    body.generationConfig = options.generationConfig;
-  }
+// ADD callGemini //
 
-  const response = await fetch(
-    `https://generativelanguage.googleapis.com/v1beta/models/${geminiModel}:generateContent?key=${apiKey}`,
-    {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body)
-    }
-  );
 
-  if (!response.ok) {
-    const errorBody = await response.text();
-    throw new Error(`Gemini request failed: ${errorBody}`);
-  }
-
-  const data = await response.json();
-  const parts = data?.candidates?.[0]?.content?.parts || [];
-  return parts
-    .map((part) => part.text)
-    .filter(Boolean)
-    .join('\n')
-    .trim();
-}
-
-// Reads up to 5 user reviews + the editorial summary for a place and asks
-// Gemini to produce a short AI Overview paragraph and a "What to do" list.
-// Called inside getPlaceDetails after fetching from the Places API.
 async function summarizePlaceExperience(place, aiApiKey) {
   const reviewSnippets = Array.isArray(place?.reviews)
     ? place.reviews
